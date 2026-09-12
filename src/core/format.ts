@@ -10,8 +10,7 @@ export function formatMs(ms: number): string {
   return `${pad(minutes)}:${pad(seconds)}.${pad(millis, 3)}`;
 }
 
-/** 时长（毫秒）的人类可读表示：523ms / 01:02.003。 */
+/** 时长统一以毫秒显示：冲突定位要求逐毫秒精确，不做会损失精度的换算。 */
 export function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${ms}ms`;
-  return `${formatMs(ms)}（${ms}ms）`;
+  return `${ms}ms`;
 }

@@ -52,14 +52,16 @@ export function validateItem(value: RawItem, index: number): ValidationIssue[] {
   }
 
   // startMs / endMs：[0, 86400000] 内的整数，且 startMs < endMs
-  const startOk = isSafeInt32Range(record.startMs) && record.startMs >= 0 && record.startMs <= MS_PER_DAY;
-  const endOk = isSafeInt32Range(record.endMs) && record.endMs >= 0 && record.endMs <= MS_PER_DAY;
+  const rawStart = 'startMs' in record ? record.startMs : undefined;
+  const rawEnd = 'endMs' in record ? record.endMs : undefined;
+  const startOk = isSafeInt32Range(rawStart) && rawStart >= 0 && rawStart <= MS_PER_DAY;
+  const endOk = isSafeInt32Range(rawEnd) && rawEnd >= 0 && rawEnd <= MS_PER_DAY;
 
   if (!('startMs' in record)) {
     issues.push('缺少字段 startMs。');
   } else if (!startOk) {
     issues.push(
-      `字段 startMs 必须是 0 到 ${MS_PER_DAY}（含）之间的整数毫秒，收到的是 ${literalDescription(record.startMs)}。`,
+      `字段 startMs 必须是 0 到 ${MS_PER_DAY}（含）之间的整数毫秒，收到的是 ${literalDescription(rawStart)}。`,
     );
   }
 
@@ -67,13 +69,13 @@ export function validateItem(value: RawItem, index: number): ValidationIssue[] {
     issues.push('缺少字段 endMs。');
   } else if (!endOk) {
     issues.push(
-      `字段 endMs 必须是 0 到 ${MS_PER_DAY}（含）之间的整数毫秒，收到的是 ${literalDescription(record.endMs)}。`,
+      `字段 endMs 必须是 0 到 ${MS_PER_DAY}（含）之间的整数毫秒，收到的是 ${literalDescription(rawEnd)}。`,
     );
   }
 
-  if (startOk && endOk && record.startMs >= record.endMs) {
+  if (startOk && endOk && rawStart >= rawEnd) {
     issues.push(
-      `字段 startMs（${record.startMs}）必须严格小于 endMs（${record.endMs}），区间为 [startMs, endMs)。`,
+      `字段 startMs（${rawStart}）必须严格小于 endMs（${rawEnd}），区间为 [startMs, endMs)。`,
     );
   }
 
@@ -127,13 +129,17 @@ export function validateBatch(data: unknown): ValidationResult {
     issues.push(...itemIssues);
 
     if (itemIssues.length === 0) {
-      const item = raw as CueItem;
-      items.push(item);
-      const first = idFirstIndex.get(item.id);
-      if (first === undefined) {
-        idFirstIndex.set(item.id, index);
-      } else {
-        duplicateIds.add(item.id);
+      items.push(raw as CueItem);
+    }
+
+    // id 查重独立于其它字段：即使该条目的 startMs 等字段非法，
+    // 只要 id 本身是非空字符串，重复问题仍要在本条目附近一次性报告。
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      const id = (raw as Record<string, unknown>).id;
+      if (typeof id === 'string' && id.length > 0) {
+        const first = idFirstIndex.get(id);
+        if (first === undefined) idFirstIndex.set(id, index);
+        else duplicateIds.add(id);
       }
     }
   });
