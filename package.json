@@ -1,0 +1,30 @@
+{
+  "name": "stage-resource-conflict-viewer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "纯前端舞台设备资源（灯光 / 升降台 / 雾机）提示时间区间冲突检视器",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "acceptance": "npm run build && vitest run && playwright test"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.5",
+    "vitest": "^3.0.2"
+  }
+}
