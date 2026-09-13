@@ -4,10 +4,12 @@ import App from './App';
 import { SAMPLE_CONFLICT } from './samples';
 
 /**
- * 聚焦上下文的 React 交互测试（jsdom）：
- * 领域投影由 focusWindow / compactScale 的纯函数测试保证，这里只验证装配行为——
- * 窗口内呈现、切模式只重算坐标、完全重叠争用逐组轮换、选择失效就近反馈并退焦、
- * 编辑/粘贴/载入示例清除聚焦。
+ * 聚焦上下文 + 时刻游标的 React 交互测试（jsdom）：
+ * 领域投影由 focusWindow / compactScale / momentCursor 的纯函数测试保证，
+ * 这里只验证装配行为——窗口内呈现、切模式只重算坐标、完全重叠争用逐组轮换、
+ * 选择失效就近反馈并退焦、编辑清除聚焦；
+ * 以及时刻游标：刻度带落点设置/移动、切模式后标线与详情仍指向同一真实时刻、
+ * 无占用时刻提示、聚焦窗口外清除游标、重置链路撤下游标。
  */
 
 // 锚冲突 (a,b) 交集 [630000,660000) → 聚焦窗口固定为 [600000,690000)。
@@ -31,6 +33,34 @@ afterEach(() => {
 
 function cueTitles(): string[] {
   return [...document.querySelectorAll('.cue-block')].map((el) => el.getAttribute('title') ?? '');
+}
+
+/**
+ * jsdom 无布局：给刻度带一个确定宽度，使整日模式下 1px = 1000ms
+ * （clientX 630 → 真实时刻 630_000ms），返回刻度带元素。
+ * 元素在重渲染间保持同一 DOM 节点，但切模式 / 换批次后重新 mock 更直观。
+ */
+function mockRulerCanvas(width = 86_400): HTMLElement {
+  const canvas = document.querySelector('.ruler-canvas') as HTMLElement;
+  canvas.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      width,
+      height: 28,
+      right: width,
+      bottom: 28,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  return canvas;
+}
+
+function cursorLineMoments(): string[] {
+  return [...document.querySelectorAll('.cursor-line')].map(
+    (el) => el.getAttribute('data-moment') ?? '',
+  );
 }
 
 describe('聚焦上下文主链路', () => {
@@ -226,5 +256,134 @@ describe('编辑 / 粘贴 / 载入示例清除聚焦', () => {
     // 重新载入后选中态也清空，示例结果照常呈现（2 处冲突）
     expect(document.querySelectorAll('.conflict-card.active')).toHaveLength(0);
     expect(screen.getAllByTestId('conflict-card')).toHaveLength(2);
+  });
+});
+
+// 两条跨资源提示在 06:00 前后重叠占用：游标落在 21_600_000（06:00）时两条都在占用；
+// 前后均为超过五分钟的长空档，紧凑模式会产生断轴（映射与整日不同）。
+const CURSOR_SCENARIO = `[
+  { "id": "m", "resource": "灯光-面光L1", "startMs": 21000000, "endMs": 22000000 },
+  { "id": "n", "resource": "雾机-上场门", "startMs": 21500000, "endMs": 21800000 }
+]`;
+
+describe('时刻游标：设置 / 移动 / 清除', () => {
+  it('点击刻度带设置游标并显示占用分组；再点移动；无占用时刻提示且标线保留；清除后撤下', () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: CURSOR_SCENARIO } });
+
+    // 点击刻度带 06:00 处（clientX 21600 × 1000ms）：设置游标
+    fireEvent.click(mockRulerCanvas(), { clientX: 21_600 });
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 360:00.000');
+    // 该时刻两条提示都在占用，按 resource 码点序分组：灯光（U+706F）在雾机（U+96FE）前
+    const groups = screen.getAllByTestId('moment-group');
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.textContent).toContain('灯光-面光L1');
+    expect(groups[0]!.textContent).toContain('m');
+    expect(groups[1]!.textContent).toContain('雾机-上场门');
+    expect(groups[1]!.textContent).toContain('n');
+    // 标线贯穿刻度带与两条资源行，均指向同一真实时刻
+    expect(cursorLineMoments()).toEqual(['21600000', '21600000', '21600000']);
+
+    // 点击别处（移动到 01:40.000：该时刻无任何占用
+    fireEvent.click(mockRulerCanvas(), { clientX: 100 });
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 01:40.000');
+    expect(screen.getByTestId('moment-empty').textContent).toBe('此刻无设备占用');
+    expect(screen.queryAllByTestId('moment-group')).toHaveLength(0);
+    // 标线保留，仍指向新时刻
+    expect(cursorLineMoments()).toEqual(['100000', '100000', '100000']);
+
+    // 清除游标：详情与标线一起撤下
+    fireEvent.click(screen.getByTestId('cursor-clear'));
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(document.querySelectorAll('.cursor-line')).toHaveLength(0);
+  });
+
+  it('切换显示模式后标线与详情仍指向同一真实时刻', () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: CURSOR_SCENARIO } });
+    fireEvent.click(mockRulerCanvas(), { clientX: 21_600 });
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 360:00.000');
+
+    // 整日 → 紧凑：只重算坐标，游标真实时刻与占用清单不变
+    fireEvent.click(screen.getByTestId('mode-toggle'));
+    expect(screen.getByTestId('timeline-inner').getAttribute('data-mode')).toBe('compact');
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 360:00.000');
+    expect(cursorLineMoments()).toEqual(['21600000', '21600000', '21600000']);
+    expect(screen.getAllByTestId('moment-group')).toHaveLength(2);
+
+    // 紧凑 → 整日：同样不变
+    fireEvent.click(screen.getByTestId('mode-toggle'));
+    expect(screen.getByTestId('timeline-inner').getAttribute('data-mode')).toBe('day');
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 360:00.000');
+    expect(cursorLineMoments()).toEqual(['21600000', '21600000', '21600000']);
+  });
+
+  it('游标落在聚焦窗口内则保留；落在窗口外则提示“游标已移出当前窗口”并清除', () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: CUES_NEAR_AND_FAR } });
+
+    // 游标设在 10:30.000（630_000ms），落在锚争用 (a,b) 的聚焦窗口 [600000,690000) 内
+    fireEvent.click(mockRulerCanvas(), { clientX: 630 });
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 10:30.000');
+    // 该时刻 a、b 均在占用（b 恰在 startMs 已计入）
+    expect(screen.getAllByTestId('moment-group')).toHaveLength(1);
+    expect(screen.getByTestId('moment-group').textContent).toContain('a');
+    expect(screen.getByTestId('moment-group').textContent).toContain('b');
+
+    // 选中锚争用并进入聚焦：游标在窗口内 → 原样保留，无提示
+    const cards = screen.getAllByTestId('conflict-card');
+    fireEvent.click(cards[0]!);
+    fireEvent.click(screen.getByTestId('focus-button'));
+    expect(screen.getByTestId('focus-banner')).toBeTruthy();
+    expect(screen.queryByTestId('focus-notice')).toBeNull();
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 10:30.000');
+    // 标线随窗口映射重算坐标，真实时刻不变
+    expect(cursorLineMoments().every((m) => m === '630000')).toBe(true);
+
+    // 退出聚焦（游标保留），把游标移到窗口外的 16:40.000（1_000_000ms）
+    fireEvent.click(screen.getByTestId('exit-focus'));
+    fireEvent.click(mockRulerCanvas(), { clientX: 1_000 });
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 16:40.000');
+
+    // 再次从同一聚焦入口进入：游标落在窗口外 → 就近反馈并清除游标
+    fireEvent.click(screen.getByTestId('focus-button'));
+    const notice = screen.getByTestId('focus-notice');
+    expect(notice.textContent).toContain('游标已移出当前窗口');
+    expect(notice.textContent).toContain('已清除游标');
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(document.querySelectorAll('.cursor-line')).toHaveLength(0);
+    // 聚焦本身照常进入，选中项保留
+    expect(screen.getByTestId('focus-banner')).toBeTruthy();
+    expect(cards[0]!.className).toMatch(/active/);
+  });
+
+  it('编辑 / 粘贴 / 载入示例 / 非法输入按现有重置链路撤下游标', () => {
+    render(<App />);
+    const textarea = screen.getByLabelText('JSON 数组输入区') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: CURSOR_SCENARIO } });
+    fireEvent.click(mockRulerCanvas(), { clientX: 21_600 });
+    expect(screen.getByTestId('moment-details')).toBeTruthy();
+
+    // 编辑为另一合法批次：游标撤下
+    fireEvent.change(textarea, {
+      target: { value: `[{ "id": "p", "resource": "灯光", "startMs": 0, "endMs": 100 }]` },
+    });
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(document.querySelectorAll('.cursor-line')).toHaveLength(0);
+
+    // 重新设置后载入示例：游标撤下
+    fireEvent.click(mockRulerCanvas(), { clientX: 50 });
+    expect(screen.getByTestId('moment-details')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '载入示例（含冲突）' }));
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(document.querySelectorAll('.cursor-line')).toHaveLength(0);
+
+    // 再次设置后粘贴非法输入：整批拒绝，游标随重置链路撤下
+    fireEvent.click(mockRulerCanvas(), { clientX: 60 });
+    expect(screen.getByTestId('moment-details')).toBeTruthy();
+    fireEvent.change(textarea, { target: { value: '[{ broken' } });
+    expect(screen.getByTestId('status').textContent).toContain('整批拒绝');
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(document.querySelectorAll('.cursor-line')).toHaveLength(0);
   });
 });

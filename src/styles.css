@@ -11,6 +11,7 @@
   --warn-soft: #ff5d6c33;
   --cue: #4a90d9;
   --cue-hot: #ffd23f;
+  --cursor: #2ee6c8;
   --track: #11182a;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', system-ui, sans-serif;
 }
@@ -538,6 +539,90 @@ button {
    位置仍精确取自映射，仅把点击热区扩展到至少 6px（向右微扩，不改变左缘定位）。 */
 .timeline-inner[data-mode='compact'] .overlap {
   min-width: 6px;
+}
+
+/* 时刻游标：刻度带可点击设置 / 移动 */
+.ruler-canvas {
+  cursor: crosshair;
+}
+
+/* 时刻游标标线：贯穿刻度带与资源行的竖线，纯展示（不拦截点击） */
+.cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--cursor);
+  box-shadow: 0 0 6px #2ee6c888;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* 时刻详情区 */
+.moment-details {
+  margin-top: 10px;
+  border: 1px solid #2ee6c855;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #10262b;
+  font-size: 12.5px;
+}
+
+.moment-details-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.moment-label {
+  color: var(--cursor);
+  font-variant-numeric: tabular-nums;
+}
+
+.moment-summary {
+  color: var(--text-dim);
+}
+
+.cursor-clear {
+  margin-left: auto;
+  background: #1d3a41;
+  color: var(--text);
+  border: 1px solid #2ee6c866;
+  border-radius: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+}
+
+.cursor-clear:hover {
+  border-color: var(--cursor);
+}
+
+.moment-groups {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid #2ee6c822;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.moment-group {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.moment-resource {
+  font-weight: 700;
+  color: #8df0dd;
+  flex: none;
+}
+
+.moment-cues code {
+  margin-right: 4px;
 }
 
 /* 冲突列表 */

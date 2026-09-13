@@ -512,3 +512,114 @@ test.describe('聚焦上下文：选中争用 → 聚焦 → 紧凑 → 退出�
     await expect(page.getByTestId('conflict-card')).toHaveCount(2);
   });
 });
+
+test.describe('时刻游标：紧凑轴落点 → 查看详情 → 清除', () => {
+  // 01:00 处两条雾机提示（1ms 争用），日首空档在紧凑模式下被压成 30 秒显示宽：
+  // 紧凑轴落点经映射反演为绝对毫秒，详情区给出该时刻各设备的实际占用者。
+  const ONE_MS_AT_ONE_HOUR = `[
+  { "id": "early-a", "resource": "雾机-上场门", "startMs": 3600000, "endMs": 3601000 },
+  { "id": "early-b", "resource": "雾机-上场门", "startMs": 3600999, "endMs": 3602000 }
+]`;
+
+  test('主流程：紧凑轴落点设置游标，查看占用详情，移动到空档，清除后继续核对冲突', async ({ page }) => {
+    await page.locator('.json-input').fill(ONE_MS_AT_ONE_HOUR);
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+
+    // 在紧凑轴刻度带上、early-a 提示块正上方落点：设置时刻游标
+    const ruler = page.getByTestId('ruler-canvas');
+    const cueBox = await page.locator('.cue-block').first().boundingBox();
+    const rulerBox = await ruler.boundingBox();
+    expect(cueBox && rulerBox).toBeTruthy();
+    await page.mouse.click(cueBox!.x + cueBox!.width / 2, rulerBox!.y + rulerBox!.height / 2);
+
+    // 时刻详情：落点反演后的时刻在 early-a 区间 [60:00.000 → 60:01.000) 内，
+    // 该时刻占用者只有 early-a（early-b 尚未开始）
+    const details = page.getByTestId('moment-details');
+    await expect(details).toBeVisible();
+    await expect(page.getByTestId('moment-label')).toHaveText(/^时刻 60:00\.\d{3}$/);
+    await expect(details.getByTestId('moment-resource')).toHaveText('雾机-上场门');
+    await expect(details).toContainText('early-a');
+    await expect(details).not.toContainText('early-b');
+
+    // 标线贯穿刻度带与资源行，与详情指向同一真实时刻
+    const lines = page.getByTestId('cursor-line');
+    await expect(lines).toHaveCount(2);
+    const moment = Number(await lines.first().getAttribute('data-moment'));
+    expect(moment).toBeGreaterThanOrEqual(3_600_000);
+    expect(moment).toBeLessThan(3_601_000);
+    const moments = await lines.evaluateAll((els) => els.map((el) => el.getAttribute('data-moment')));
+    expect(new Set(moments).size).toBe(1);
+
+    // 点击刻度带别处（压缩空档内）：游标移动，该时刻无占用，标线保留
+    await page.mouse.click(rulerBox!.x + rulerBox!.width * 0.25, rulerBox!.y + rulerBox!.height / 2);
+    await expect(page.getByTestId('moment-empty')).toHaveText('此刻无设备占用');
+    await expect(page.getByTestId('cursor-line')).toHaveCount(2);
+
+    // 清除游标：详情与标线撤下
+    await page.getByTestId('cursor-clear').click();
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+    await expect(page.getByTestId('cursor-line')).toHaveCount(0);
+
+    // 清除后继续核对冲突：1ms 争用照常可选中并联动高亮
+    await page.locator('.overlap').click();
+    await expect(page.getByTestId('conflict-card')).toHaveClass(/active/);
+    await expect(page.locator('.cue-block.hot')).toHaveCount(2);
+  });
+
+  test('聚焦入口：游标落在窗口外则提示“游标已移出当前窗口”并清除游标', async ({ page }) => {
+    // 锚争用 (a,b) 交集 [630000,660000) → 聚焦窗口 [600000,690000)
+    const FOCUS_SCENARIO = `[
+  { "id": "a", "resource": "灯杆-1", "startMs": 600000, "endMs": 660000 },
+  { "id": "b", "resource": "灯杆-1", "startMs": 630000, "endMs": 670000 },
+  { "id": "t", "resource": "灯杆-1", "startMs": 680000, "endMs": 750000 },
+  { "id": "d", "resource": "远处-灯杆", "startMs": 80000000, "endMs": 80100000 }
+]`;
+    await page.locator('.json-input').fill(FOCUS_SCENARIO);
+
+    // 整日轴上把游标设到 12:00（远在聚焦窗口外的空档）
+    const ruler = page.getByTestId('ruler-canvas');
+    const rulerBox = await ruler.boundingBox();
+    expect(rulerBox).toBeTruthy();
+    await page.mouse.click(rulerBox!.x + rulerBox!.width * 0.5, rulerBox!.y + rulerBox!.height / 2);
+    await expect(page.getByTestId('moment-details')).toBeVisible();
+    await expect(page.getByTestId('moment-empty')).toHaveText('此刻无设备占用');
+    await expect(page.getByTestId('cursor-line').first()).toBeVisible();
+
+    // 选中锚争用，从现有聚焦入口进入聚焦：游标落在窗口外 → 就近反馈并清除
+    await page.getByTestId('conflict-card').first().click();
+    await page.getByTestId('focus-button').click();
+    await expect(page.getByTestId('focus-notice')).toContainText('游标已移出当前窗口');
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+    await expect(page.getByTestId('cursor-line')).toHaveCount(0);
+    // 聚焦照常进入，选中项保留
+    await expect(page.getByTestId('focus-banner')).toBeVisible();
+    await expect(page.getByTestId('conflict-card').first()).toHaveClass(/active/);
+  });
+
+  test('编辑、载入示例与非法输入按现有重置链路撤下游标', async ({ page }) => {
+    await page.getByRole('button', { name: '载入示例（含冲突）' }).click();
+
+    // 整日轴设游标（示例提示集中在 04:00 前，12:00 处无占用）
+    const clickRulerCenter = async () => {
+      const box = await page.getByTestId('ruler-canvas').boundingBox();
+      expect(box).toBeTruthy();
+      await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height / 2);
+    };
+    await clickRulerCenter();
+    await expect(page.getByTestId('moment-details')).toBeVisible();
+
+    // 载入另一示例：游标撤下
+    await page.getByRole('button', { name: '载入示例（贴边·安全）' }).click();
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+    await expect(page.getByTestId('cursor-line')).toHaveCount(0);
+
+    // 再设游标后编辑为非法输入：整批拒绝，游标随重置链路撤下
+    await clickRulerCenter();
+    await expect(page.getByTestId('moment-details')).toBeVisible();
+    await page.locator('.json-input').fill('[{ broken');
+    await expect(page.getByTestId('status')).toContainText('整批拒绝');
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+    await expect(page.getByTestId('cursor-line')).toHaveCount(0);
+  });
+});

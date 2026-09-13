@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { Conflict, CueItem } from '../core/types';
 import { compareByCodePoint, conflictKey } from '../core/conflicts';
 import { createTimeScale } from '../core/compactScale';
@@ -7,7 +8,9 @@ import { intersectsRange } from '../core/focusWindow';
 import type { FocusWindow } from '../core/focusWindow';
 import { pickOverlap } from '../core/overlapHit';
 import type { OverlapHit } from '../core/overlapHit';
+import { momentFromFraction, occupancyAtMoment } from '../core/momentCursor';
 import { formatDuration, formatMs } from '../core/format';
+import { MomentDetails } from './MomentDetails';
 
 interface TimelineProps {
   items: CueItem[];
@@ -17,6 +20,12 @@ interface TimelineProps {
   onSelect: (key: string | null) => void;
   /** 聚焦窗口（半开）：给定后时间轴只呈现与其相交的提示与冲突；null 表示整日演出。 */
   window: FocusWindow | null;
+  /** 时刻游标（绝对毫秒）；null = 未设置。 */
+  cursorMs: number | null;
+  /** 在刻度带点击设置 / 移动时刻游标（落点已反演为绝对毫秒）。 */
+  onCursorChange: (momentMs: number) => void;
+  /** 清除时刻游标。 */
+  onCursorClear: () => void;
 }
 
 interface ResourceRow {
@@ -80,7 +89,17 @@ function resolveOverlapClick(
  * 整日模式等比例映射全天，紧凑模式把超过五分钟的空档压成固定三十秒显示宽。
  * 选择某条冲突时：双方提示块与交集区域同步高亮（列表与时间轴共用 selectedKey）。
  */
-export function Timeline({ items, conflicts, mode, selectedKey, onSelect, window: focusWindow }: TimelineProps) {
+export function Timeline({
+  items,
+  conflicts,
+  mode,
+  selectedKey,
+  onSelect,
+  window: focusWindow,
+  cursorMs,
+  onCursorChange,
+  onCursorClear,
+}: TimelineProps) {
   // 映射只由“模式 + 当前合法结果 + 聚焦窗口”派生，永不改写提示本身。
   // 聚焦窗口只把映射的覆盖区间收窄到 [window.startMs, window.endMs)，
   // 窗口内整日等比例 / 紧凑压缩规则不变；切模式只重算坐标。
@@ -152,6 +171,23 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect, window
   const selected = selectedKey ? conflicts.find((c) => conflictKey(c) === selectedKey) ?? null : null;
   const selectedIds = selected ? new Set([selected.idA, selected.idB]) : null;
 
+  // 时刻游标的占用清单：半开区间派生（恰在 endMs 的提示不计入），
+  // 按 resource / id 码点序分组；游标未设置时为 null。只派生，不改写任何提示。
+  const cursorOccupancy = useMemo(
+    () => (cursorMs === null ? null : occupancyAtMoment(items, cursorMs)),
+    [items, cursorMs],
+  );
+  // 标线横坐标取自当前映射：整日 / 紧凑 / 聚焦切换只重算坐标，游标真实时刻不变
+  const cursorFraction = cursorMs === null ? null : scale.fraction(cursorMs);
+
+  // 刻度带落点 → 绝对毫秒：相对比例经当前映射（整日 / 紧凑 / 聚焦）反演。
+  // 点击只设置 / 移动游标，不影响冲突选择与显示模式。
+  const handleRulerClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!(rect.width > 0)) return; // 布局不可用（如零宽）时忽略本次落点
+    onCursorChange(momentFromFraction(scale, (event.clientX - rect.left) / rect.width));
+  };
+
   // 刻度沿【显示轴】等距采样，真实时刻由映射反演：整日即每 30 秒一刻度。
   // 紧凑模式下落在压缩空档内部的采样点一律剔除——空档已折断时间轴，
   // 其真实起止由断轴标记单独标注，避免在断轴内部画出误导性时刻。
@@ -177,26 +213,36 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect, window
   // 1ms 交集在 CSS 上另有最小点击热区（见 styles.css），保证逐毫秒可点。
 
   return (
-    <div className="timeline-scroll" data-testid="timeline-scroll" tabIndex={0}>
-      <div className="timeline-inner" data-testid="timeline-inner" data-mode={mode}>
-        <div className="timeline-ruler" style={{ height: rulerHeight }}>
-          <div className="tl-label ruler-label" aria-hidden="true" />
-          <div className="ruler-canvas">
-            {ticks.map((t) => {
-              const isEnd = t.display === scale.totalDisplay;
-              return (
-                <div
-                  key={t.display}
-                  className={`tick${isEnd ? ' tick-end' : ''}`}
-                  style={{ left: `${(t.display / scale.totalDisplay) * 100}%` }}
-                >
-                  <span className="tick-label">{formatMs(t.real)}</span>
-                </div>
-              );
-            })}
-            <AxisMarkers scale={scale} withLabels />
+    <>
+      <div className="timeline-scroll" data-testid="timeline-scroll" tabIndex={0}>
+        <div className="timeline-inner" data-testid="timeline-inner" data-mode={mode}>
+          <div className="timeline-ruler" style={{ height: rulerHeight }}>
+            <div className="tl-label ruler-label" aria-hidden="true" />
+            {/* 刻度带：点击设置 / 移动时刻游标（落点按当前映射反演为绝对毫秒） */}
+            <div
+              className="ruler-canvas"
+              data-testid="ruler-canvas"
+              onClick={handleRulerClick}
+              title="点击设置时刻游标，查看该时刻各设备占用者"
+            >
+              {ticks.map((t) => {
+                const isEnd = t.display === scale.totalDisplay;
+                return (
+                  <div
+                    key={t.display}
+                    className={`tick${isEnd ? ' tick-end' : ''}`}
+                    style={{ left: `${(t.display / scale.totalDisplay) * 100}%` }}
+                  >
+                    <span className="tick-label">{formatMs(t.real)}</span>
+                  </div>
+                );
+              })}
+              <AxisMarkers scale={scale} withLabels />
+              {cursorFraction !== null && cursorMs !== null && (
+                <CursorLine fraction={cursorFraction} momentMs={cursorMs} />
+              )}
+            </div>
           </div>
-        </div>
 
         {rows.map((row) => {
           const placed = lanes.get(row.resource)!;
@@ -215,6 +261,10 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect, window
               </div>
               <div className="tl-track">
                 <AxisMarkers scale={scale} />
+                {/* 时刻游标标线：贯穿资源行，与刻度带上的游标同一真实时刻 */}
+                {cursorFraction !== null && cursorMs !== null && (
+                  <CursorLine fraction={cursorFraction} momentMs={cursorMs} />
+                )}
 
                 {/* 交集区域（点击区域，坐标取自映射；紧凑模式下 1ms 争用仍宽 1px）。
                     多个标记可能叠在同一点、或扩展热区互相覆盖，因此点击不在元素自身
@@ -273,8 +323,31 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect, window
             </div>
           );
         })}
+        </div>
       </div>
-    </div>
+
+      {/* 时刻详情区：游标指向时刻的各设备占用者（派生清单由本组件传入） */}
+      {cursorMs !== null && cursorOccupancy !== null && (
+        <MomentDetails momentMs={cursorMs} occupancy={cursorOccupancy} onClear={onCursorClear} />
+      )}
+    </>
+  );
+}
+
+/**
+ * 时刻游标标线：贯穿刻度带与资源行的竖线。
+ * 纯展示层：pointer-events 关闭，不参与任何点击判定；
+ * data-moment 记录真实时刻，供“标线与详情指向同一时刻”的核对。
+ */
+function CursorLine({ fraction, momentMs }: { fraction: number; momentMs: number }) {
+  return (
+    <div
+      className="cursor-line"
+      data-testid="cursor-line"
+      data-moment={momentMs}
+      aria-hidden="true"
+      style={{ left: `${fraction * 100}%` }}
+    />
   );
 }
 

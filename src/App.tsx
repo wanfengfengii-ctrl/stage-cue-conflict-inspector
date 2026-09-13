@@ -21,6 +21,9 @@ export default function App() {
   const [focusKey, setFocusKey] = useState<string | null>(null);
   // 选择在聚焦窗口内失效时的就近反馈（如下文选中窗口外的争用）
   const [notice, setNotice] = useState<string | null>(null);
+  // 时刻游标：只有“未设置（null）/ 已设置绝对毫秒”这一组状态；
+  // 标线坐标与占用清单全部由此派生，切换显示模式不改写它。
+  const [cursorMs, setCursorMs] = useState<number | null>(null);
 
   // 结果完全由当前文本派生：非法输入时 result.ok === false，
   // 下游时间轴/冲突列表不会拿到任何旧结果（不存在沿用旧结果的路径）。
@@ -44,13 +47,14 @@ export default function App() {
   const focusWindow: FocusWindow | null = focusConflict ? createFocusWindow(focusConflict) : null;
 
   // 编辑 / 粘贴 / 载入示例统一入口：只要“载入/修改动作”发生，就清除选择与聚焦、
-  // 恢复整日模式。不能只依赖 useEffect([text])——再次载入与当前完全相同的示例时
-  // text 字符串不变、effect 不会运行，聚焦与紧凑状态会错误残留。
+  // 恢复整日模式、撤下时刻游标。不能只依赖 useEffect([text])——再次载入与当前
+  // 完全相同的示例时 text 字符串不变、effect 不会运行，聚焦与紧凑状态会错误残留。
   const resetViewState = () => {
     setSelectedKey(null);
     setFocusKey(null);
     setMode('day');
     setNotice(null);
+    setCursorMs(null);
   };
 
   const handleTextChange = (next: string) => {
@@ -78,11 +82,21 @@ export default function App() {
   // 时间轴只重算坐标。
   const toggleMode = () => setMode((m) => (m === 'day' ? 'compact' : 'day'));
 
-  // 从已选中的争用进入“聚焦上下文”
+  // 从已选中的争用进入“聚焦上下文”。
+  // 时刻游标若落在窗口外（半开 [startMs, endMs)）：就近反馈并清除游标——
+  // 窗口内无法呈现该时刻，保留只会留下指向窗外的标线；落在窗口内则原样保留。
   const enterFocus = () => {
     if (!selectedConflict) return;
+    const nextWindow = createFocusWindow(selectedConflict);
+    if (cursorMs !== null && (cursorMs < nextWindow.startMs || cursorMs >= nextWindow.endMs)) {
+      setCursorMs(null);
+      setNotice(
+        `游标已移出当前窗口：时刻 ${formatMs(cursorMs)} 不在聚焦窗口 [${formatMs(nextWindow.startMs)} → ${formatMs(nextWindow.endMs)}) 内，已清除游标。`,
+      );
+    } else {
+      setNotice(null);
+    }
     setFocusKey(conflictKey(selectedConflict));
-    setNotice(null);
   };
 
   // 退出聚焦：回到完整演出继续核对，选中项原样保留
@@ -219,6 +233,9 @@ export default function App() {
                 selectedKey={selectedKey}
                 onSelect={handleSelect}
                 window={focusWindow}
+                cursorMs={cursorMs}
+                onCursorChange={setCursorMs}
+                onCursorClear={() => setCursorMs(null)}
               />
               <ConflictList conflicts={conflicts} selectedKey={selectedKey} onSelect={handleSelect} />
             </>
