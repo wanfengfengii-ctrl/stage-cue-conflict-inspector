@@ -1,13 +1,15 @@
 import { useMemo } from 'react';
 import type { Conflict, CueItem } from '../core/types';
-import { MS_PER_DAY } from '../core/types';
 import { compareByCodePoint } from '../core/conflicts';
-import { formatMs } from '../core/format';
+import { createTimeScale } from '../core/compactScale';
+import type { TimelineMode, TimeScale } from '../core/compactScale';
+import { formatDuration, formatMs } from '../core/format';
 import { conflictKey } from './ConflictList';
 
 interface TimelineProps {
   items: CueItem[];
   conflicts: Conflict[];
+  mode: TimelineMode;
   selectedKey: string | null;
   onSelect: (key: string | null) => void;
 }
@@ -18,13 +20,22 @@ interface ResourceRow {
 }
 
 const ROW_HEIGHT = 56;
-const RULER_HEIGHT = 28;
+const RULER_HEIGHT_DAY = 28;
+const RULER_HEIGHT_COMPACT = 44;
+const LABEL_WIDTH = 130;
+/** 显示轴上每 30_000 显示毫秒一道刻度（整日即真实 30 秒；紧凑模式刻度坐标同样取自映射）。 */
+const TICK_DISPLAY_MS = 30_000;
 
 /**
  * 按资源绘制的可滚动时间轴。
+ * 所有横向坐标（提示块、冲突交集、刻度、点击区域、断轴标记）统一取自 TimeScale：
+ * 整日模式等比例映射全天，紧凑模式把超过五分钟的空档压成固定三十秒显示宽。
  * 选择某条冲突时：双方提示块与交集区域同步高亮（列表与时间轴共用 selectedKey）。
  */
-export function Timeline({ items, conflicts, selectedKey, onSelect }: TimelineProps) {
+export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: TimelineProps) {
+  // 映射只由“模式 + 当前合法结果”派生，永不改写提示本身
+  const scale = useMemo(() => createTimeScale(mode, items), [mode, items]);
+
   const rows = useMemo<ResourceRow[]>(() => {
     const map = new Map<string, CueItem[]>();
     for (const item of items) {
@@ -65,21 +76,59 @@ export function Timeline({ items, conflicts, selectedKey, onSelect }: TimelinePr
   const selected = selectedKey ? conflicts.find((c) => conflictKey(c) === selectedKey) ?? null : null;
   const selectedIds = selected ? new Set([selected.idA, selected.idB]) : null;
 
-  // 刻度：每 30 秒一道主刻度
-  const ticks: number[] = [];
-  for (let t = 0; t <= MS_PER_DAY; t += 30_000) ticks.push(t);
+  // 刻度沿【显示轴】等距采样，真实时刻由映射反演：整日即每 30 秒一刻度。
+  // 紧凑模式下落在压缩空档内部的采样点一律剔除——空档已折断时间轴，
+  // 其真实起止由断轴标记单独标注，避免在断轴内部画出误导性时刻。
+  const ticks = useMemo(() => {
+    const out: { display: number; real: number }[] = [];
+    for (let d = 0; d < scale.totalDisplay; d += TICK_DISPLAY_MS) {
+      const insideCompressed = scale.compressedGaps.some(
+        (g) => d > g.displayStart && d < g.displayEnd,
+      );
+      if (!insideCompressed) out.push({ display: d, real: scale.toReal(d) });
+    }
+    const last = scale.totalDisplay;
+    if (out.length === 0 || out[out.length - 1].display !== last) {
+      out.push({ display: last, real: scale.toReal(last) });
+    }
+    return out;
+  }, [scale]);
 
-  const pct = (ms: number) => `${(ms / MS_PER_DAY) * 100}%`;
+  const rulerHeight = mode === 'compact' ? RULER_HEIGHT_COMPACT : RULER_HEIGHT_DAY;
+  // 紧凑模式以 1 显示毫秒 = 1px 定宽（含左侧资源标签），因此占用段内 1ms 的真实争用仍占 1px，
+  // 可被逐毫秒点中；容器自身横向滚动。整日模式保持弹性最小宽度。
+  const compactInnerWidth = mode === 'compact' ? LABEL_WIDTH + scale.totalDisplay : undefined;
+  const trackStyle =
+    mode === 'compact'
+      ? ({ width: scale.totalDisplay, minWidth: 0, flex: '0 0 auto' } as const)
+      : undefined;
 
   return (
     <div className="timeline-scroll" data-testid="timeline-scroll" tabIndex={0}>
-      <div className="timeline-inner">
-        <div className="timeline-ruler" style={{ height: RULER_HEIGHT }}>
-          {ticks.map((t) => (
-            <div key={t} className="tick" style={{ left: pct(t) }}>
-              <span className="tick-label">{formatMs(t)}</span>
-            </div>
-          ))}
+      <div
+        className="timeline-inner"
+        data-testid="timeline-inner"
+        data-mode={mode}
+        style={
+          compactInnerWidth !== undefined
+            ? { width: compactInnerWidth, minWidth: compactInnerWidth }
+            : undefined
+        }
+      >
+        <div className="timeline-ruler" style={{ height: rulerHeight }}>
+          <div className="tl-label ruler-label" aria-hidden="true" />
+          <div className="ruler-canvas" style={trackStyle}>
+            {ticks.map((t) => (
+              <div
+                key={t.display}
+                className="tick"
+                style={{ left: `${(t.display / scale.totalDisplay) * 100}%` }}
+              >
+                <span className="tick-label">{formatMs(t.real)}</span>
+              </div>
+            ))}
+            <AxisMarkers scale={scale} withLabels />
+          </div>
         </div>
 
         {rows.map((row) => {
@@ -97,8 +146,10 @@ export function Timeline({ items, conflicts, selectedKey, onSelect }: TimelinePr
               <div className="tl-label" title={row.resource}>
                 {row.resource}
               </div>
-              <div className="tl-track">
-                {/* 交集区域 */}
+              <div className="tl-track" style={trackStyle}>
+                <AxisMarkers scale={scale} />
+
+                {/* 交集区域（点击区域，坐标取自映射；紧凑模式下 1ms 争用仍宽 1px） */}
                 {rowConflicts.map((c) => {
                   const key = conflictKey(c);
                   return (
@@ -107,8 +158,8 @@ export function Timeline({ items, conflicts, selectedKey, onSelect }: TimelinePr
                       key={`ov-${key}`}
                       className={`overlap${key === selectedKey ? ' active' : ''}`}
                       style={{
-                        left: pct(c.overlapStart),
-                        width: pct(c.overlapDuration),
+                        left: `${scale.fraction(c.overlapStart) * 100}%`,
+                        width: `${scale.fractionSpan(c.overlapStart, c.overlapEnd) * 100}%`,
                         top: 4,
                         height: 18,
                       }}
@@ -129,8 +180,8 @@ export function Timeline({ items, conflicts, selectedKey, onSelect }: TimelinePr
                       key={item.id}
                       className={`cue-block${hot ? ' hot' : ''}${dimmed ? ' dimmed' : ''}`}
                       style={{
-                        left: pct(item.startMs),
-                        width: pct(item.endMs - item.startMs),
+                        left: `${scale.fraction(item.startMs) * 100}%`,
+                        width: `${scale.fractionSpan(item.startMs, item.endMs) * 100}%`,
                         top: 26 + lane * 14,
                       }}
                       title={`${item.id} [${formatMs(item.startMs)} → ${formatMs(item.endMs)})`}
@@ -145,5 +196,46 @@ export function Timeline({ items, conflicts, selectedKey, onSelect }: TimelinePr
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * 压缩空档处的断轴标记：双斜杆贯穿整行，并在刻度带上标注该空档的真实起止。
+ * 纯展示层：pointer-events 关闭，不参与任何点击判定。
+ */
+function AxisMarkers({ scale, withLabels = false }: { scale: TimeScale; withLabels?: boolean }) {
+  if (scale.compressedGaps.length === 0) return null;
+  return (
+    <>
+      {scale.compressedGaps.map((gap, i) => {
+        const left = (scale.toDisplay(gap.realStart) / scale.totalDisplay) * 100;
+        const width =
+          ((scale.toDisplay(gap.realEnd) - scale.toDisplay(gap.realStart)) / scale.totalDisplay) * 100;
+        const label = `断轴：空档 ${formatMs(gap.realStart)} 至 ${formatMs(gap.realEnd)}，真实时长 ${formatDuration(
+          gap.realDuration,
+        )}，压缩为 30 秒显示宽，真实时刻不变`;
+        return (
+          <div
+            key={`${gap.realStart}-${i}`}
+            className="axis-break"
+            data-testid="axis-break"
+            data-real-start={gap.realStart}
+            data-real-end={gap.realEnd}
+            role="img"
+            aria-label={label}
+            title={label}
+            style={{ left: `${left}%`, width: `${width}%` }}
+          >
+            <span className="axis-break-slash" aria-hidden="true" />
+            {withLabels && (
+              <span className="axis-break-label" aria-hidden="true">
+                <span className="axis-break-line">起 {formatMs(gap.realStart)}</span>
+                <span className="axis-break-line">止 {formatMs(gap.realEnd)}</span>
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }

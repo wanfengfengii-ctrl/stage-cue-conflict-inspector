@@ -111,3 +111,142 @@ test('1ms 的真实争用可被定位，输出双方 id 与重叠起止/时长',
   await expect(card).toContainText('b');
   await expect(card).toContainText('时长 1ms');
 });
+
+test.describe('紧凑时间轴', () => {
+  // 1ms 争用位于 01:00:00.999~01:00:01.000：整日模式下仅约万分之一像素无法点中；
+  // 紧凑模式把一小时日首长空档压成 30 秒显示宽后，交集恰为 1px，可逐毫秒点中。
+  const ONE_MS_AT_ONE_HOUR = `[
+  { "id": "early-a", "resource": "雾机-上场门", "startMs": 3600000, "endMs": 3601000 },
+  { "id": "early-b", "resource": "雾机-上场门", "startMs": 3600999, "endMs": 3602000 }
+]`;
+
+  test('切换紧凑模式：出现断轴标记并标注空档真实起止，刻度仍为真实时刻', async ({ page }) => {
+    await page.locator('.json-input').fill(ONE_MS_AT_ONE_HOUR);
+
+    const toggle = page.getByTestId('mode-toggle');
+    const inner = page.getByTestId('timeline-inner');
+
+    await expect(inner).toHaveAttribute('data-mode', 'day');
+    await expect(toggle).toContainText('紧凑时间轴');
+
+    await toggle.click();
+
+    await expect(inner).toHaveAttribute('data-mode', 'compact');
+    await expect(toggle).toContainText('返回整日时间轴');
+    await expect(page.getByTestId('mode-hint')).toBeVisible();
+
+    // 日首空档 00:00.000 → 01:00.000 被压缩；断轴出现在刻度带与资源行
+    const breaks = page.getByTestId('axis-break');
+    await expect(breaks.first()).toBeVisible();
+    await expect(breaks.first()).toHaveAttribute('data-real-start', '0');
+    await expect(breaks.first()).toHaveAttribute('data-real-end', '3600000');
+    await expect(breaks.first()).toHaveAttribute('title', /空档 00:00\.000 至 60:00\.000/);
+
+    // 压缩固定为三十秒显示宽：紧凑模式 1 显示毫秒 = 1px，故空档宽恰为 30000px
+    // （真实时长 3600000ms，压缩 120 倍）；刻度/标记坐标全部取自同一映射
+    const firstBreakWidth = await breaks.first().evaluate((el) => el.getBoundingClientRect().width);
+    expect(firstBreakWidth).toBeCloseTo(30_000, -1);
+
+    // 刻度上仍能读到真实时刻 60:00.000（占用片段起点），而不是被压缩后的伪时刻
+    await expect(page.locator('.timeline-ruler')).toContainText('60:00.000');
+  });
+
+  test('点击压缩后的 1ms 交集：列表卡片与时间轴高亮始终指向同一争用', async ({ page }) => {
+    await page.locator('.json-input').fill(ONE_MS_AT_ONE_HOUR);
+    await page.getByTestId('mode-toggle').click();
+
+    const overlap = page.locator('.overlap');
+    await expect(overlap).toHaveCount(1);
+
+    // 压缩后 1ms 交集约占 1px（边框与亚像素舍入下测量为 1~2px），
+    // 对比整日模式下不足 0.02px：此处终于可以逐毫秒点中
+    const box = await overlap.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(0.9);
+    expect(box!.width).toBeLessThan(3);
+    await overlap.click();
+
+    // 时间轴交集高亮，且唯一一张冲突卡片同步激活（同一争用）
+    await expect(overlap).toHaveClass(/active/);
+    const card = page.getByTestId('conflict-card');
+    await expect(card).toHaveClass(/active/);
+    await expect(card).toContainText('时长 1ms');
+    await expect(page.locator('.cue-block.hot')).toHaveCount(2);
+
+    // 再点交集取消，两边同时取消
+    await overlap.click();
+    await expect(overlap).not.toHaveClass(/active/);
+    await expect(card).not.toHaveClass(/active/);
+
+    // 反向联动：从列表点选后时间轴高亮同一争用
+    await card.click();
+    await expect(overlap).toHaveClass(/active/);
+    await expect(card).toHaveClass(/active/);
+  });
+
+  test('返回整日时间轴后保留仍有效的冲突选择，且断轴消失', async ({ page }) => {
+    await page.locator('.json-input').fill(ONE_MS_AT_ONE_HOUR);
+    await page.getByTestId('mode-toggle').click();
+
+    await page.locator('.overlap').click();
+    await expect(page.getByTestId('conflict-card')).toHaveClass(/active/);
+
+    await page.getByTestId('mode-toggle').click();
+
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'day');
+    await expect(page.getByTestId('mode-toggle')).toContainText('紧凑时间轴');
+    await expect(page.getByTestId('axis-break')).toHaveCount(0);
+
+    // 选择原样保留：卡片与时间轴交集仍指向同一争用
+    await expect(page.getByTestId('conflict-card')).toHaveClass(/active/);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+  });
+
+  test('编辑 JSON 自动恢复整日模式；非法输入在紧凑模式下同样撤下列表与时间轴', async ({ page }) => {
+    await page.locator('.json-input').fill(ONE_MS_AT_ONE_HOUR);
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+
+    // 输入新的合法批次：恢复整日
+    await page.locator('.json-input').fill(`[
+  { "id": "a", "resource": "灯光", "startMs": 0, "endMs": 100 },
+  { "id": "b", "resource": "灯光", "startMs": 50, "endMs": 200 }
+]`);
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'day');
+    await expect(page.getByTestId('mode-toggle')).toContainText('紧凑时间轴');
+
+    // 再进紧凑，随后改成非法批次：整批拒绝，时间轴/切换开关/列表全部撤下
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    await page.locator('.json-input').fill('[{ broken');
+    await expect(page.getByTestId('status')).toContainText('整批拒绝');
+    await expect(page.getByTestId('timeline-scroll')).toHaveCount(0);
+    await expect(page.getByTestId('mode-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('conflict-card')).toHaveCount(0);
+
+    // 修正后重新渲染，模式已重置为整日
+    await page.locator('.json-input').fill(`[
+  { "id": "a", "resource": "灯光", "startMs": 0, "endMs": 100 },
+  { "id": "b", "resource": "灯光", "startMs": 50, "endMs": 200 }
+]`);
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'day');
+    await expect(page.getByTestId('conflict-card')).toHaveCount(1);
+  });
+
+  test('紧凑模式不改写冲突排序：多资源示例的卡片次序与整日后一致', async ({ page }) => {
+    await page.getByRole('button', { name: '载入示例（含冲突）' }).click();
+    const order = () =>
+      page
+        .getByTestId('conflict-card')
+        .locator('[data-testid="conflict-resource"]')
+        .allTextContents();
+
+    expect(await order()).toEqual(['灯光-面光L1', '雾机-上场门']);
+
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    expect(await order()).toEqual(['灯光-面光L1', '雾机-上场门']);
+    await expect(page.getByTestId('conflict-card')).toHaveCount(2);
+    await expect(page.getByTestId('axis-break')).not.toHaveCount(0);
+  });
+});

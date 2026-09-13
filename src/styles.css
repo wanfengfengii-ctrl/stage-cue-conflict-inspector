@@ -226,6 +226,38 @@ button {
 }
 
 /* 时间轴 */
+.timeline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.mode-toggle {
+  background: #243150;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+
+.mode-toggle:hover {
+  border-color: var(--accent);
+}
+
+.mode-toggle.active {
+  background: #3a2f18;
+  border-color: #ffd23f88;
+  color: var(--cue-hot);
+}
+
+.mode-hint {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
 .timeline-scroll {
   overflow-x: auto;
   overflow-y: auto;
@@ -246,6 +278,20 @@ button {
   z-index: 3;
   background: #0c1220;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: stretch;
+}
+
+.ruler-label {
+  position: static;
+  z-index: auto;
+  border-bottom: none;
+}
+
+.ruler-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 760px;
 }
 
 .tick {
@@ -291,6 +337,72 @@ button {
   position: relative;
   flex: 1;
   min-width: 760px;
+}
+
+/* 断轴标记：贯穿刻度带与每一行，纯展示（不拦截点击） */
+.axis-break {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 3;
+  background: repeating-linear-gradient(135deg, #ffffff0a 0 6px, transparent 6px 12px);
+}
+
+.axis-break-slash {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 12px;
+  transform: translateX(-50%);
+}
+
+.axis-break-slash::before,
+.axis-break-slash::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--text-dim) 0 5px,
+    transparent 5px 9px
+  );
+}
+
+.axis-break-slash::before {
+  left: 3px;
+  transform: skewX(-16deg);
+}
+
+.axis-break-slash::after {
+  left: 8px;
+  transform: skewX(-16deg);
+}
+
+.axis-break-label {
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: #0c1220f2;
+  border: 1px solid #3a4665;
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  z-index: 4;
+}
+
+.axis-break-line {
+  font-size: 9px;
+  line-height: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .cue-block {

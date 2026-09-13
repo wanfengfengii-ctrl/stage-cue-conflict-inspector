@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { detectConflicts, parseAndValidate } from './core/conflicts';
 import type { Conflict } from './core/types';
+import type { TimelineMode } from './core/compactScale';
 import { InputPanel } from './components/InputPanel';
 import { ConflictList, conflictKey } from './components/ConflictList';
 import { Timeline } from './components/Timeline';
@@ -10,6 +11,8 @@ import './styles.css';
 export default function App() {
   const [text, setText] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // App 只保存“整日 / 紧凑”两种显示模式；映射纯派生，不改写任何真实时刻
+  const [mode, setMode] = useState<TimelineMode>('day');
 
   // 结果完全由当前文本派生：非法输入时 result.ok === false，
   // 下游时间轴/冲突列表不会拿到任何旧结果（不存在沿用旧结果的路径）。
@@ -21,9 +24,11 @@ export default function App() {
     [result],
   );
 
-  // 文本一旦变化（重新解析）即清除选中态，避免高亮指向已不存在的冲突
+  // 文本一旦变化（重新解析/编辑 JSON）即清除选中态并恢复整日模式，
+  // 避免高亮指向已不存在的冲突；切换显示模式本身不走这里，选择得以保留。
   useEffect(() => {
     setSelectedKey(null);
+    setMode('day');
   }, [text]);
 
   // 若选中的冲突在新结果中消失，同样清除
@@ -36,6 +41,9 @@ export default function App() {
   const loadSample = (which: 'conflict' | 'touching') => {
     setText(which === 'conflict' ? SAMPLE_CONFLICT : SAMPLE_TOUCHING);
   };
+
+  // 仅切换显示模式：不重新校验、不改写数据；切回整日后仍有效的冲突选择原样保留
+  const toggleMode = () => setMode((m) => (m === 'day' ? 'compact' : 'day'));
 
   const resourceCount = new Set(items.map((i) => i.resource)).size;
 
@@ -74,9 +82,33 @@ export default function App() {
                 </div>
               )}
 
+              <div className="timeline-toolbar">
+                <button
+                  type="button"
+                  className={`mode-toggle${mode === 'compact' ? ' active' : ''}`}
+                  onClick={toggleMode}
+                  aria-pressed={mode === 'compact'}
+                  data-testid="mode-toggle"
+                  title={
+                    mode === 'compact'
+                      ? '恢复整日等比例时间轴（当前争用选择保留）'
+                      : '把相邻提示之间超过五分钟的空档压成固定三十秒显示宽，真实时刻不变'
+                  }
+                >
+                  {mode === 'compact' ? '返回整日时间轴' : '紧凑时间轴（压缩 >5 分钟空档）'}
+                </button>
+                {mode === 'compact' && (
+                  <span className="mode-hint" data-testid="mode-hint">
+                    紧凑模式仅压缩显示：超过五分钟的空档固定为三十秒宽（断轴处标注真实起止），
+                    提示与冲突的真实时刻、排序与判定均不变。
+                  </span>
+                )}
+              </div>
+
               <Timeline
                 items={items}
                 conflicts={conflicts}
+                mode={mode}
                 selectedKey={selectedKey}
                 onSelect={setSelectedKey}
               />
