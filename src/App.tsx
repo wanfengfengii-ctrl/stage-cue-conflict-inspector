@@ -130,6 +130,25 @@ export default function App() {
     setNotice(null);
   };
 
+  // 刻度带点击统一入口：落点已由时间轴反演为绝对毫秒。
+  // 聚焦窗口是半开区间 [startMs, endMs)：刻度带右缘点击经窗口映射反演会得到
+  // 不属于窗口的终点 endMs（标线落到窗口外缘、详情也指向窗外时刻），因此夹回
+  // 窗口内最后一毫秒，游标与聚焦状态始终同步；整日模式不夹取（日界此刻本无占用）。
+  // 同时撤下旧提示——窗外清除的“已移出窗口”反馈不能与新的有效游标同时出现。
+  const handleCursorChange = (momentMs: number) => {
+    const next = focusWindow
+      ? Math.max(focusWindow.startMs, Math.min(focusWindow.endMs - 1, momentMs))
+      : momentMs;
+    setCursorMs(next);
+    setNotice(null);
+  };
+
+  // 从详情区手动清除游标：标线、详情与任何旧的移出窗口提示一并同步撤下。
+  const handleCursorClear = () => {
+    setCursorMs(null);
+    setNotice(null);
+  };
+
   const resourceCount = new Set(items.map((i) => i.resource)).size;
 
   return (
@@ -234,8 +253,8 @@ export default function App() {
                 onSelect={handleSelect}
                 window={focusWindow}
                 cursorMs={cursorMs}
-                onCursorChange={setCursorMs}
-                onCursorClear={() => setCursorMs(null)}
+                onCursorChange={handleCursorChange}
+                onCursorClear={handleCursorClear}
               />
               <ConflictList conflicts={conflicts} selectedKey={selectedKey} onSelect={handleSelect} />
             </>

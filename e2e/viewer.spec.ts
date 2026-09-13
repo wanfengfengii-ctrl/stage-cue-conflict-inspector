@@ -597,6 +597,68 @@ test.describe('时刻游标：紧凑轴落点 → 查看详情 → 清除', () =
     await expect(page.getByTestId('conflict-card').first()).toHaveClass(/active/);
   });
 
+  test('聚焦后刻度带右端点击夹回半开窗口内；重设/清除游标时旧移出提示同步撤下', async ({ page }) => {
+    // 锚争用 (a,b) 交集 [630000,660000) → 聚焦窗口 [600000,690000)（半开，终点不属于窗口）
+    const FOCUS_SCENARIO = `[
+  { "id": "a", "resource": "灯杆-1", "startMs": 600000, "endMs": 660000 },
+  { "id": "b", "resource": "灯杆-1", "startMs": 630000, "endMs": 670000 },
+  { "id": "t", "resource": "灯杆-1", "startMs": 680000, "endMs": 750000 },
+  { "id": "d", "resource": "远处-灯杆", "startMs": 80000000, "endMs": 80100000 }
+]`;
+    await page.locator('.json-input').fill(FOCUS_SCENARIO);
+
+    // 整日轴中点（12:00）落在窗口外：设游标后聚焦 → 移出窗口提示、游标被清除
+    const ruler = page.getByTestId('ruler-canvas');
+    const rulerBox = await ruler.boundingBox();
+    expect(rulerBox).toBeTruthy();
+    await page.mouse.click(rulerBox!.x + rulerBox!.width * 0.5, rulerBox!.y + rulerBox!.height / 2);
+    await expect(page.getByTestId('moment-details')).toBeVisible();
+    await page.getByTestId('conflict-card').first().click();
+    await page.getByTestId('focus-button').click();
+    await expect(page.getByTestId('focus-notice')).toContainText('游标已移出当前窗口');
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+
+    // 聚焦后横幅换行，刻度带位置会变化：重新取盒模型
+    const focusRulerBox = await ruler.boundingBox();
+    expect(focusRulerBox).toBeTruthy();
+
+    // 异常一：点击刻度带最右端（clientX 恰好落在右缘，窗口映射反演本会得到
+    // 不属于半开窗口的终点 690000=11:30.000），正确状态应保持在窗口内——
+    // 夹回窗口内最后一毫秒 689999（11:29.999）。右缘像素在命中测试中属于
+    // 相邻元素，因此直接在刻度带上派发这一右缘点击。
+    await ruler.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      el.dispatchEvent(
+        new MouseEvent('click', {
+          bubbles: true,
+          clientX: rect.right,
+          clientY: rect.top + rect.height / 2,
+        }),
+      );
+    });
+    await expect(page.getByTestId('moment-label')).toHaveText('时刻 11:29.999');
+    const endMoments = await page.getByTestId('cursor-line').evaluateAll((els) =>
+      els.map((el) => el.getAttribute('data-moment')),
+    );
+    expect(endMoments.length).toBeGreaterThan(0);
+    expect(endMoments.every((m) => m === '689999')).toBe(true);
+
+    // 异常二：窗外清除提示之后，在窗口内重新设置有效游标——
+    // 只呈现有效游标，旧清除提示不得与当前详情同时出现
+    await page.mouse.click(
+      focusRulerBox!.x + focusRulerBox!.width * 0.34,
+      focusRulerBox!.y + focusRulerBox!.height / 2,
+    );
+    await expect(page.getByTestId('moment-details')).toBeVisible();
+    await expect(page.getByTestId('focus-notice')).toHaveCount(0);
+
+    // 异常三：从详情区手动清除——标线与详情消失，旧移出窗口提示也同步撤下
+    await page.getByTestId('cursor-clear').click();
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+    await expect(page.getByTestId('cursor-line')).toHaveCount(0);
+    await expect(page.getByTestId('focus-notice')).toHaveCount(0);
+  });
+
   test('编辑、载入示例与非法输入按现有重置链路撤下游标', async ({ page }) => {
     await page.getByRole('button', { name: '载入示例（含冲突）' }).click();
 

@@ -357,6 +357,52 @@ describe('时刻游标：设置 / 移动 / 清除', () => {
     expect(cards[0]!.className).toMatch(/active/);
   });
 
+  it('聚焦后点击刻度带右端：游标夹回半开窗口内，不落到窗外终点', () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: CUES_NEAR_AND_FAR } });
+
+    const cards = screen.getAllByTestId('conflict-card');
+    fireEvent.click(cards[0]!);
+    fireEvent.click(screen.getByTestId('focus-button'));
+    // 锚 (a,b) 窗口 [600000,690000)（半开，终点 690000 不属于窗口）
+    expect(screen.getByTestId('focus-banner')).toBeTruthy();
+
+    // 点击刻度带最右端：窗口映射反演本会得到窗外终点 690000（11:30.000），
+    // 正确状态应夹回窗口内最后一毫秒 689999（11:29.999）
+    fireEvent.click(mockRulerCanvas(), { clientX: 86_400 });
+    expect(screen.getByTestId('moment-label').textContent).toBe('时刻 11:29.999');
+    expect(cursorLineMoments().every((m) => m === '689999')).toBe(true);
+    expect(screen.queryByTestId('focus-notice')).toBeNull();
+  });
+
+  it('窗外清除提示后窗口内重设游标：只呈现有效游标，旧提示不并存；手动清除后提示同步撤下', () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: CUES_NEAR_AND_FAR } });
+
+    // 先把游标放到窗口外（16:40.000），进入聚焦 → 游标被清除并给出移出窗口提示
+    fireEvent.click(mockRulerCanvas(), { clientX: 1_000 });
+    const cards = screen.getAllByTestId('conflict-card');
+    fireEvent.click(cards[0]!);
+    fireEvent.click(screen.getByTestId('focus-button'));
+    const staleNotice = screen.getByTestId('focus-notice');
+    expect(staleNotice.textContent).toContain('游标已移出当前窗口');
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+
+    // 在窗口内重新设置有效游标（窗口映射下 clientX=630 → 约 600656ms，落在提示 a 内）：
+    // 当前详情与旧清除提示不得同时出现——只呈现有效游标
+    fireEvent.click(mockRulerCanvas(), { clientX: 630 });
+    expect(screen.getByTestId('moment-details')).toBeTruthy();
+    expect(screen.queryByTestId('focus-notice')).toBeNull();
+    expect(screen.getByTestId('moment-group').textContent).toContain('a');
+    expect(cursorLineMoments().length).toBeGreaterThan(0);
+
+    // 从详情区手动清除：标线与详情消失，旧移出窗口提示也不得残留
+    fireEvent.click(screen.getByTestId('cursor-clear'));
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(document.querySelectorAll('.cursor-line')).toHaveLength(0);
+    expect(screen.queryByTestId('focus-notice')).toBeNull();
+  });
+
   it('编辑 / 粘贴 / 载入示例 / 非法输入按现有重置链路撤下游标', () => {
     render(<App />);
     const textarea = screen.getByLabelText('JSON 数组输入区') as HTMLTextAreaElement;
