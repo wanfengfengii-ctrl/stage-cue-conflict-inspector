@@ -4,6 +4,13 @@ import type { Conflict } from './core/types';
 import type { TimelineMode } from './core/compactScale';
 import { createFocusWindow, intersectsRange } from './core/focusWindow';
 import type { FocusWindow } from './core/focusWindow';
+import {
+  conflictInScope,
+  listResources,
+  projectConflicts,
+  projectItems,
+} from './core/resourceScope';
+import type { ResourceScope } from './core/resourceScope';
 import { formatMs } from './core/format';
 import { InputPanel } from './components/InputPanel';
 import { ConflictList } from './components/ConflictList';
@@ -24,6 +31,9 @@ export default function App() {
   // 时刻游标：只有“未设置（null）/ 已设置绝对毫秒”这一组状态；
   // 标线坐标与占用清单全部由此派生，切换显示模式不改写它。
   const [cursorMs, setCursorMs] = useState<number | null>(null);
+  // 资源范围：App 只保存“全部资源（null）/ 指定资源（资源名）”这一组状态。
+  // 范围只是可见投影的取舍——提示、争用、排序、绝对时刻与选择身份都不改写。
+  const [scope, setScope] = useState<ResourceScope>(null);
 
   // 结果完全由当前文本派生：非法输入时 result.ok === false，
   // 下游时间轴/冲突列表不会拿到任何旧结果（不存在沿用旧结果的路径）。
@@ -34,6 +44,13 @@ export default function App() {
     () => (result.ok ? detectConflicts(result.items) : []),
     [result],
   );
+
+  // 资源范围投影：列表与时间轴消费同一份结果。null 范围原样穿过（不改写）；
+  // 指定范围只做“是否进入视图”的取舍，对象身份、次序与绝对时刻保持原样。
+  const scopedItems = useMemo(() => projectItems(items, scope), [items, scope]);
+  const scopedConflicts = useMemo(() => projectConflicts(conflicts, scope), [conflicts, scope]);
+  // 范围选择入口始终列出整批的全部资源（不随投影收窄），便于直接切换目标资源
+  const resources = useMemo(() => listResources(items), [items]);
 
   const selectedConflict = useMemo(
     () => (selectedKey ? conflicts.find((c) => conflictKey(c) === selectedKey) ?? null : null),
@@ -47,14 +64,16 @@ export default function App() {
   const focusWindow: FocusWindow | null = focusConflict ? createFocusWindow(focusConflict) : null;
 
   // 编辑 / 粘贴 / 载入示例统一入口：只要“载入/修改动作”发生，就清除选择与聚焦、
-  // 恢复整日模式、撤下时刻游标。不能只依赖 useEffect([text])——再次载入与当前
-  // 完全相同的示例时 text 字符串不变、effect 不会运行，聚焦与紧凑状态会错误残留。
+  // 恢复整日模式、撤下时刻游标、恢复全部资源范围。不能只依赖 useEffect([text])——
+  // 再次载入与当前完全相同的示例时 text 字符串不变、effect 不会运行，
+  // 聚焦与紧凑状态会错误残留。
   const resetViewState = () => {
     setSelectedKey(null);
     setFocusKey(null);
     setMode('day');
     setNotice(null);
     setCursorMs(null);
+    setScope(null);
   };
 
   const handleTextChange = (next: string) => {
@@ -81,6 +100,20 @@ export default function App() {
   // 仅切换显示模式：不重新校验、不改写数据，也不改变聚焦窗口与选中项，
   // 时间轴只重算坐标。
   const toggleMode = () => setMode((m) => (m === 'day' ? 'compact' : 'day'));
+
+  // 切换资源范围（含“显示全部资源”）：只换投影，不重新校验、不改写数据。
+  // 选中 / 聚焦锚点的争用若不属于新范围便同步取消（聚焦随之退出），
+  // 属于该范围（或回到全部资源）则原样保留；时刻游标与显示模式不受影响。
+  const handleScopeChange = (next: ResourceScope) => {
+    setScope(next);
+    setNotice(null);
+    if (selectedConflict && !conflictInScope(selectedConflict, next)) {
+      setSelectedKey(null);
+    }
+    if (focusConflict && !conflictInScope(focusConflict, next)) {
+      setFocusKey(null);
+    }
+  };
 
   // 从已选中的争用进入“聚焦上下文”。
   // 时刻游标若落在窗口外（半开 [startMs, endMs)）：就近反馈并清除游标——
@@ -175,14 +208,26 @@ export default function App() {
             </div>
           ) : (
             <>
-              {conflicts.length === 0 ? (
-                <div className="status status-ok" role="status" data-testid="status">
-                  ✓ 可执行：{items.length} 条提示 / {resourceCount} 项资源，未发现冲突。
+              {scope === null ? (
+                conflicts.length === 0 ? (
+                  <div className="status status-ok" role="status" data-testid="status">
+                    ✓ 可执行：{items.length} 条提示 / {resourceCount} 项资源，未发现冲突。
+                  </div>
+                ) : (
+                  <div className="status status-conflict" role="alert" data-testid="status">
+                    ⚠ {items.length} 条提示 / {resourceCount} 项资源，发现 {conflicts.length} 处设备争用。
+                    点击冲突卡片或时间轴上的红色交集，双方提示与交集将同步高亮。
+                  </div>
+                )
+              ) : scopedConflicts.length === 0 ? (
+                <div className="status status-scope" role="status" data-testid="status">
+                  资源「{scope}」无争用：该资源 {scopedItems.length} 条提示互不重叠——
+                  仅为当前范围的局部结论，其余资源的争用请通过“显示全部资源”回到全场视图核对。
                 </div>
               ) : (
                 <div className="status status-conflict" role="alert" data-testid="status">
-                  ⚠ {items.length} 条提示 / {resourceCount} 项资源，发现 {conflicts.length} 处设备争用。
-                  点击冲突卡片或时间轴上的红色交集，双方提示与交集将同步高亮。
+                  ⚠ 已隔离资源「{scope}」：{scopedItems.length} 条提示，{scopedConflicts.length} 处设备争用
+                  （整批共 {conflicts.length} 处）。点击冲突卡片或时间轴上的红色交集，双方提示与交集将同步高亮。
                 </div>
               )}
 
@@ -205,6 +250,44 @@ export default function App() {
                   <span className="mode-hint" data-testid="mode-hint">
                     紧凑模式仅压缩显示：超过五分钟的空档固定为三十秒宽（断轴处标注真实起止），
                     提示与冲突的真实时刻、排序与判定均不变。
+                  </span>
+                )}
+
+                {/* 资源范围：隔离某一项资源核对其全部占用与争用；范围只是可见投影，
+                    提示、争用、排序与选择身份均不改写。也可直接点时间轴上的资源名。 */}
+                <label className="scope-picker">
+                  <span className="scope-picker-label">资源范围</span>
+                  <select
+                    className="scope-select"
+                    data-testid="scope-select"
+                    aria-label="资源范围"
+                    value={scope ?? ''}
+                    onChange={(event) =>
+                      handleScopeChange(event.target.value === '' ? null : event.target.value)
+                    }
+                  >
+                    <option value="">全部资源（{resources.length} 项）</option>
+                    {resources.map((resource) => (
+                      <option key={resource} value={resource}>
+                        {resource}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {scope !== null && (
+                  <span className="scope-banner" data-testid="scope-banner">
+                    <span className="scope-banner-text">
+                      已隔离：{scope}（{scopedItems.length} 条提示 / {scopedConflicts.length} 处争用），
+                      其余资源仅暂时隐藏，排序、绝对时刻与争用身份不变。
+                    </span>
+                    <button
+                      type="button"
+                      className="scope-clear"
+                      onClick={() => handleScopeChange(null)}
+                      data-testid="scope-clear"
+                    >
+                      显示全部资源
+                    </button>
                   </span>
                 )}
 
@@ -246,8 +329,8 @@ export default function App() {
               )}
 
               <Timeline
-                items={items}
-                conflicts={conflicts}
+                items={scopedItems}
+                conflicts={scopedConflicts}
                 mode={mode}
                 selectedKey={selectedKey}
                 onSelect={handleSelect}
@@ -255,8 +338,15 @@ export default function App() {
                 cursorMs={cursorMs}
                 onCursorChange={handleCursorChange}
                 onCursorClear={handleCursorClear}
+                scope={scope}
+                onScopeChange={handleScopeChange}
               />
-              <ConflictList conflicts={conflicts} selectedKey={selectedKey} onSelect={handleSelect} />
+              <ConflictList
+                conflicts={scopedConflicts}
+                selectedKey={selectedKey}
+                onSelect={handleSelect}
+                scope={scope}
+              />
             </>
           )}
         </section>

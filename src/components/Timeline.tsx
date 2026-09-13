@@ -26,6 +26,10 @@ interface TimelineProps {
   onCursorChange: (momentMs: number) => void;
   /** 清除时刻游标。 */
   onCursorClear: () => void;
+  /** 当前资源范围（null = 全部资源）；items/conflicts 已是该范围的投影。 */
+  scope: string | null;
+  /** 从时间轴资源名选择范围：隔离该资源，只呈现它的提示与争用。 */
+  onScopeChange: (resource: string) => void;
 }
 
 interface ResourceRow {
@@ -99,6 +103,8 @@ export function Timeline({
   cursorMs,
   onCursorChange,
   onCursorClear,
+  scope,
+  onScopeChange,
 }: TimelineProps) {
   // 映射只由“模式 + 当前合法结果 + 聚焦窗口”派生，永不改写提示本身。
   // 聚焦窗口只把映射的覆盖区间收窄到 [window.startMs, window.endMs)，
@@ -257,7 +263,24 @@ export function Timeline({
               style={{ height: ROW_HEIGHT + maxLane * 14 }}
             >
               <div className="tl-label" title={row.resource}>
-                {row.resource}
+                {/* 资源名即范围入口：点击隔离该资源核对占用与争用；
+                    已隔离的当前资源显示为纯文本（范围状态由工具栏横幅与下拉呈现） */}
+                {scope === row.resource ? (
+                  <span className="scope-row-current" data-testid="scope-row-current">
+                    {row.resource}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="scope-row"
+                    data-testid="scope-row"
+                    data-resource={row.resource}
+                    onClick={() => onScopeChange(row.resource)}
+                    title={`只显示「${row.resource}」的提示与争用，其余资源暂时隐藏（可经“显示全部资源”返回）`}
+                  >
+                    {row.resource}
+                  </button>
+                )}
               </div>
               <div className="tl-track">
                 <AxisMarkers scale={scale} />

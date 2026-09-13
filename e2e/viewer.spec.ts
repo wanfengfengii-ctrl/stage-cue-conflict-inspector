@@ -378,6 +378,149 @@ test.describe('交集热区选择：完全重叠 / 紧凑轴相邻 1ms / 空字�
   });
 });
 
+test.describe('资源范围隔离：隔离含冲突资源 → 局部空结果 → 返回全部资源 → 编辑重置', () => {
+  // 灯光-面光L1 两条重叠（一处争用）、雾机-上场门两条重叠（一处争用）、
+  // 升降台-主台一条（无争用）。资源码点序：升降台-主台 < 灯光-面光L1 < 雾机-上场门。
+  const SCOPE_SCENARIO = `[
+  { "id": "LX-01", "resource": "灯光-面光L1", "startMs": 0, "endMs": 120000 },
+  { "id": "LX-02", "resource": "灯光-面光L1", "startMs": 60000, "endMs": 180000 },
+  { "id": "FOG-01", "resource": "雾机-上场门", "startMs": 90000, "endMs": 150000 },
+  { "id": "FOG-02", "resource": "雾机-上场门", "startMs": 120000, "endMs": 200000 },
+  { "id": "LIFT-01", "resource": "升降台-主台", "startMs": 30000, "endMs": 210000 }
+]`;
+
+  test('主链路：从时间轴资源名隔离并联动高亮，切到无争用资源得局部空结果，返回全部资源恢复原排序', async ({ page }) => {
+    await page.locator('.json-input').fill(SCOPE_SCENARIO);
+
+    // 全场视图：3 行资源、2 处争用，卡片按 resource 码点序
+    await expect(page.locator('.tl-row')).toHaveCount(3);
+    const cards = page.getByTestId('conflict-card');
+    await expect(cards).toHaveCount(2);
+    const order = () => cards.getByTestId('conflict-resource').allTextContents();
+    expect(await order()).toEqual(['灯光-面光L1', '雾机-上场门']);
+
+    // 范围入口列出整批全部资源（含无争用的升降台）
+    const scopeSelect = page.getByTestId('scope-select');
+    await expect(scopeSelect.locator('option')).toHaveText([
+      '全部资源（3 项）',
+      '升降台-主台',
+      '灯光-面光L1',
+      '雾机-上场门',
+    ]);
+
+    // 先选中灯光的争用，再从时间轴资源名隔离该资源：选择属于新范围 → 原样保留
+    await cards.first().click();
+    await page.locator('[data-testid="scope-row"][data-resource="灯光-面光L1"]').click();
+
+    // 投影：只剩灯光一行，列表与时间轴消费同一结果；横幅与下拉同步呈现范围
+    await expect(page.getByTestId('scope-banner')).toContainText('已隔离：灯光-面光L1');
+    await expect(scopeSelect).toHaveValue('灯光-面光L1');
+    await expect(page.locator('.tl-row')).toHaveCount(1);
+    await expect(page.getByTestId('scope-row-current')).toHaveText('灯光-面光L1');
+    await expect(cards).toHaveCount(1);
+    await expect(page.locator('.overlap')).toHaveCount(1);
+    await expect(page.locator('.cue-block')).toHaveCount(2);
+
+    // 选择保留且联动高亮：双方提示块 hot、交集 active 指向同一争用
+    await expect(cards.first()).toHaveClass(/active/);
+    await expect(page.locator('.cue-block.hot')).toHaveCount(2);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+    const hotTitles = await page.locator('.cue-block.hot').evaluateAll((nodes) =>
+      nodes.map((n) => (n as HTMLElement).title),
+    );
+    expect(hotTitles.some((t) => t.startsWith('LX-01'))).toBe(true);
+    expect(hotTitles.some((t) => t.startsWith('LX-02'))).toBe(true);
+
+    // 状态条是范围结论（已隔离…1 处争用），不是整批统计
+    await expect(page.getByTestId('status')).toContainText('已隔离资源「灯光-面光L1」');
+
+    // 切换到无争用的升降台：局部空结果——明确“无争用”，绝不宣告整批可执行；
+    // 原选中争用不属于新范围 → 同步取消
+    await scopeSelect.selectOption('升降台-主台');
+    await expect(page.getByTestId('scope-empty')).toContainText('资源「升降台-主台」无争用');
+    await expect(page.getByTestId('all-clear')).toHaveCount(0);
+    await expect(page.getByTestId('status')).toContainText('无争用');
+    await expect(page.getByTestId('status')).not.toContainText('可执行');
+    await expect(cards).toHaveCount(0);
+    await expect(page.locator('.overlap')).toHaveCount(0);
+    await expect(page.locator('.conflict-card.active')).toHaveCount(0);
+    await expect(page.locator('.cue-block.hot')).toHaveCount(0);
+    // 该资源的提示仍在（局部空的是争用，不是占用）
+    await expect(page.locator('.tl-row')).toHaveCount(1);
+    await expect(page.locator('.cue-block')).toHaveCount(1);
+    await expect(page.locator('.cue-block').first()).toHaveAttribute(
+      'title',
+      'LIFT-01 [00:30.000 → 03:30.000)',
+    );
+
+    // 返回全部资源：3 行恢复，卡片次序与隔离前一致（排序不改写）
+    await page.getByTestId('scope-clear').click();
+    await expect(page.getByTestId('scope-banner')).toHaveCount(0);
+    await expect(scopeSelect).toHaveValue('');
+    await expect(page.locator('.tl-row')).toHaveCount(3);
+    await expect(cards).toHaveCount(2);
+    expect(await order()).toEqual(['灯光-面光L1', '雾机-上场门']);
+    await expect(page.locator('.overlap')).toHaveCount(2);
+  });
+
+  test('隔离期间紧凑轴、聚焦与时刻游标按现有规则工作；修改输入后范围重置', async ({ page }) => {
+    await page.locator('.json-input').fill(SCOPE_SCENARIO);
+
+    // 隔离灯光并进入聚焦（窗口 = 交集 [60000,120000) 两侧各 30 秒）
+    await page.locator('[data-testid="scope-row"][data-resource="灯光-面光L1"]').click();
+    await page.getByTestId('conflict-card').first().click();
+    await page.getByTestId('focus-button').click();
+    await expect(page.getByTestId('focus-banner')).toContainText('00:30.000');
+    await expect(page.getByTestId('focus-banner')).toContainText('02:30.000');
+
+    // 聚焦期间切紧凑：只重算坐标，范围与窗口不变
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    await expect(page.getByTestId('scope-banner')).toBeVisible();
+    await expect(page.getByTestId('focus-banner')).toBeVisible();
+    await expect(page.locator('.tl-row')).toHaveCount(1);
+
+    // 时刻游标：隔离视图下占用清单只含范围内资源。
+    // 窗口 [30000,150000) 内灯光占用无缝铺满，刻度带 1/4 处落点反演约 60000ms，
+    // 此时 LX-01 在占用；雾机/升降台虽在同时刻占用但被投影排除。
+    const ruler = page.getByTestId('ruler-canvas');
+    const rulerBox = await ruler.boundingBox();
+    expect(rulerBox).toBeTruthy();
+    await page.mouse.click(rulerBox!.x + rulerBox!.width * 0.25, rulerBox!.y + rulerBox!.height / 2);
+    await expect(page.getByTestId('moment-details')).toBeVisible();
+    const groups = page.getByTestId('moment-group');
+    await expect(groups).toHaveCount(1);
+    await expect(groups.first().getByTestId('moment-resource')).toHaveText('灯光-面光L1');
+    await expect(groups.first()).toContainText('LX-01');
+
+    // 修改输入：范围恢复全部资源，紧凑/聚焦/游标按现有重置链路一并撤下
+    await page.locator('.json-input').fill(`[
+  { "id": "p", "resource": "灯光", "startMs": 0, "endMs": 100 },
+  { "id": "q", "resource": "灯光", "startMs": 50, "endMs": 200 }
+]`);
+    await expect(page.getByTestId('scope-select')).toHaveValue('');
+    await expect(page.getByTestId('scope-banner')).toHaveCount(0);
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'day');
+    await expect(page.getByTestId('focus-banner')).toHaveCount(0);
+    await expect(page.getByTestId('moment-details')).toHaveCount(0);
+    await expect(page.locator('.tl-row')).toHaveCount(1);
+
+    // 非法输入：整批拒绝，范围控件随结果一并撤下
+    await page.locator('.json-input').fill(SCOPE_SCENARIO);
+    await page.locator('[data-testid="scope-row"][data-resource="雾机-上场门"]').click();
+    await expect(page.getByTestId('scope-banner')).toBeVisible();
+    await page.locator('.json-input').fill('[{ broken');
+    await expect(page.getByTestId('status')).toContainText('整批拒绝');
+    await expect(page.getByTestId('scope-select')).toHaveCount(0);
+    await expect(page.getByTestId('scope-banner')).toHaveCount(0);
+
+    // 修正后：范围仍是全部资源，不残留隔离视图
+    await page.locator('.json-input').fill(SCOPE_SCENARIO);
+    await expect(page.getByTestId('scope-select')).toHaveValue('');
+    await expect(page.locator('.tl-row')).toHaveCount(3);
+  });
+});
+
 test.describe('聚焦上下文：选中争用 → 聚焦 → 紧凑 → 退出聚焦', () => {
   // 锚冲突 (a,b) 交集 [630000,660000) → 聚焦窗口固定 [600000,690000)。
   // t 跨窗口右边界（start 680000，与 b 贴边后段不相交）；

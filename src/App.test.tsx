@@ -266,7 +266,154 @@ const CURSOR_SCENARIO = `[
   { "id": "n", "resource": "雾机-上场门", "startMs": 21500000, "endMs": 21800000 }
 ]`;
 
+// 三项资源：灯光两条重叠（一处争用）、雾机两条重叠（一处争用）、升降台一条（无争用）。
+// 资源码点序：升降台-主台(U+5347) < 灯光-面光L1(U+706F) < 雾机-上场门(U+96FE)。
+const SCOPE_SCENARIO = `[
+  { "id": "LX-01", "resource": "灯光-面光L1", "startMs": 0, "endMs": 120000 },
+  { "id": "LX-02", "resource": "灯光-面光L1", "startMs": 60000, "endMs": 180000 },
+  { "id": "FOG-01", "resource": "雾机-上场门", "startMs": 90000, "endMs": 150000 },
+  { "id": "FOG-02", "resource": "雾机-上场门", "startMs": 120000, "endMs": 200000 },
+  { "id": "LIFT-01", "resource": "升降台-主台", "startMs": 30000, "endMs": 210000 }
+]`;
+
+function scopeRowButton(resource: string): HTMLElement {
+  const el = document.querySelector(`[data-testid="scope-row"][data-resource="${resource}"]`);
+  if (!el) throw new Error(`未找到资源行按钮：${resource}`);
+  return el as HTMLElement;
+}
+
+describe('资源范围隔离', () => {
+  it('从时间轴资源名隔离含冲突资源：投影一致、选择保留并联动高亮；切到无争用资源得局部空结果；返回全部资源恢复原排序', () => {
+    const { container } = render(<App />);
+    fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: SCOPE_SCENARIO } });
+
+    // 全场视图：3 行资源、2 处争用，卡片按 resource 码点序（灯光 → 雾机）
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(3);
+    const cards = screen.getAllByTestId('conflict-card');
+    expect(cards).toHaveLength(2);
+    const order = () =>
+      [...document.querySelectorAll('[data-testid="conflict-resource"]')].map((el) => el.textContent);
+    expect(order()).toEqual(['灯光-面光L1', '雾机-上场门']);
+
+    // 先选中灯光的争用，再从时间轴资源名隔离该资源：选择属于新范围 → 原样保留
+    fireEvent.click(cards[0]!);
+    fireEvent.click(scopeRowButton('灯光-面光L1'));
+
+    // 投影：只剩灯光一行，列表与时间轴消费同一结果（1 卡片 / 1 交集 / 2 提示块）
+    expect(screen.getByTestId('scope-banner').textContent).toContain('已隔离：灯光-面光L1');
+    expect((screen.getByTestId('scope-select') as HTMLSelectElement).value).toBe('灯光-面光L1');
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(1);
+    expect(screen.getByTestId('scope-row-current').textContent).toBe('灯光-面光L1');
+    expect(screen.getAllByTestId('conflict-card')).toHaveLength(1);
+    expect(container.querySelectorAll('.overlap')).toHaveLength(1);
+    expect(cueTitles()).toHaveLength(2);
+
+    // 选择保留且联动高亮：双方提示块 hot、交集 active 指向同一争用
+    expect(screen.getByTestId('conflict-card').className).toMatch(/active/);
+    expect(container.querySelectorAll('.cue-block.hot')).toHaveLength(2);
+    expect(container.querySelectorAll('.overlap.active')).toHaveLength(1);
+
+    // 状态条反映范围结论而非整批
+    expect(screen.getByTestId('status').textContent).toContain('已隔离资源「灯光-面光L1」');
+
+    // 切换到无争用的升降台：局部空结果——明确“无争用”，绝不宣告整批可执行；
+    // 原选中争用不属于新范围 → 同步取消
+    fireEvent.change(screen.getByTestId('scope-select'), { target: { value: '升降台-主台' } });
+    expect(screen.getByTestId('scope-empty').textContent).toContain('资源「升降台-主台」无争用');
+    expect(screen.queryByTestId('all-clear')).toBeNull();
+    expect(screen.getByTestId('status').textContent).toContain('无争用');
+    expect(screen.getByTestId('status').textContent).not.toContain('可执行');
+    expect(screen.queryByTestId('conflict-card')).toBeNull();
+    expect(container.querySelectorAll('.overlap')).toHaveLength(0);
+    expect(container.querySelectorAll('.conflict-card.active')).toHaveLength(0);
+    expect(container.querySelectorAll('.cue-block.hot')).toHaveLength(0);
+    // 该资源的提示仍在（局部空的是争用，不是占用）
+    expect(cueTitles()).toEqual(['LIFT-01 [00:30.000 → 03:30.000)']);
+
+    // 返回全部资源：3 行恢复，卡片次序与隔离前一致（排序不改写）
+    fireEvent.click(screen.getByTestId('scope-clear'));
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect((screen.getByTestId('scope-select') as HTMLSelectElement).value).toBe('');
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(3);
+    expect(order()).toEqual(['灯光-面光L1', '雾机-上场门']);
+    expect(container.querySelectorAll('.overlap')).toHaveLength(2);
+  });
+
+  it('隔离期间紧凑轴、聚焦与时刻游标按现有规则工作；编辑输入后范围重置', () => {
+    const { container } = render(<App />);
+    const textarea = screen.getByLabelText('JSON 数组输入区') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: SCOPE_SCENARIO } });
+
+    // 隔离灯光：选中其争用并进入聚焦（窗口 = 交集 [60000,120000) 两侧各 30 秒）
+    fireEvent.click(scopeRowButton('灯光-面光L1'));
+    fireEvent.click(screen.getByTestId('conflict-card'));
+    fireEvent.click(screen.getByTestId('focus-button'));
+    expect(screen.getByTestId('focus-banner').textContent).toContain('00:30.000');
+    expect(screen.getByTestId('focus-banner').textContent).toContain('02:30.000');
+
+    // 聚焦期间切紧凑：只重算坐标，范围与窗口不变
+    fireEvent.click(screen.getByTestId('mode-toggle'));
+    expect(screen.getByTestId('timeline-inner').getAttribute('data-mode')).toBe('compact');
+    expect(screen.getByTestId('scope-banner')).toBeTruthy();
+    expect(screen.getByTestId('focus-banner')).toBeTruthy();
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(1);
+
+    // 时刻游标：隔离视图下占用清单只含范围内资源（90 秒处灯光/雾机/升降台均在占用，
+    // 投影后只剩灯光的 LX-01）
+    fireEvent.click(mockRulerCanvas(), { clientX: 90 });
+    expect(screen.getByTestId('moment-details')).toBeTruthy();
+    const groups = screen.getAllByTestId('moment-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.textContent).toContain('灯光-面光L1');
+    expect(groups[0]!.textContent).toContain('LX-01');
+
+    // 编辑输入：范围恢复全部资源，紧凑/聚焦/游标按现有重置链路一并撤下
+    fireEvent.change(textarea, {
+      target: {
+        value: `[
+  { "id": "p", "resource": "灯光", "startMs": 0, "endMs": 100 },
+  { "id": "q", "resource": "灯光", "startMs": 50, "endMs": 200 }
+]`,
+      },
+    });
+    expect((screen.getByTestId('scope-select') as HTMLSelectElement).value).toBe('');
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect(screen.getByTestId('timeline-inner').getAttribute('data-mode')).toBe('day');
+    expect(screen.queryByTestId('focus-banner')).toBeNull();
+    expect(screen.queryByTestId('moment-details')).toBeNull();
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(1);
+  });
+
+  it('载入示例与非法输入同样恢复全部资源范围', () => {
+    const { container } = render(<App />);
+    const textarea = screen.getByLabelText('JSON 数组输入区') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: SCOPE_SCENARIO } });
+    fireEvent.click(scopeRowButton('雾机-上场门'));
+    expect(screen.getByTestId('scope-banner')).toBeTruthy();
+
+    // 载入示例：范围重置为全部资源（示例含 3 项资源）
+    fireEvent.click(screen.getByRole('button', { name: '载入示例（含冲突）' }));
+    expect((screen.getByTestId('scope-select') as HTMLSelectElement).value).toBe('');
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(3);
+
+    // 再次隔离后粘贴非法输入：整批拒绝，范围状态一并撤下
+    fireEvent.click(scopeRowButton('灯光-面光L1'));
+    expect(screen.getByTestId('scope-banner')).toBeTruthy();
+    fireEvent.change(textarea, { target: { value: '[{ broken' } });
+    expect(screen.getByTestId('status').textContent).toContain('整批拒绝');
+    expect(screen.queryByTestId('scope-select')).toBeNull();
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+
+    // 修正后：范围仍是全部资源，不残留隔离视图
+    fireEvent.change(textarea, { target: { value: SCOPE_SCENARIO } });
+    expect((screen.getByTestId('scope-select') as HTMLSelectElement).value).toBe('');
+    expect(container.querySelectorAll('.tl-row')).toHaveLength(3);
+  });
+});
+
 describe('时刻游标：设置 / 移动 / 清除', () => {
+
   it('点击刻度带设置游标并显示占用分组；再点移动；无占用时刻提示且标线保留；清除后撤下', () => {
     render(<App />);
     fireEvent.change(screen.getByLabelText('JSON 数组输入区'), { target: { value: CURSOR_SCENARIO } });
