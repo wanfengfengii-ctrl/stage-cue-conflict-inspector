@@ -282,6 +282,29 @@ export function detectConflicts(items: CueItem[]): Conflict[] {
   return conflicts;
 }
 
+/**
+ * 争用的【选择身份键】：列表选中态与时间轴高亮靠它指向同一争用，必须无碰撞。
+ *
+ * 字符串字段经 JSON 转义并带引号定界，数字裸写，字段间以 U+001F（单元分隔符）连接。
+ * 旧实现用裸 U+0000 连接且无定界，存在两类碰撞，这里一并消除：
+ * - resource / id 合法地包含空格等任意字符造成的切分歧义
+ *   （"a" + "b c" 与 "a b" + "c" 朴素拼接相同）——由 JSON 引号定界分开；
+ * - 空字符注入：JSON 转义 u0000 可把 U+0000 合法放进字段，恰好仿冒旧的 NUL
+ *   分隔符（("a","x<NUL>y") 与 ("a<NUL>x","y") 旧键字节相同，点一条会高亮两条）；
+ * - U+001F 在 JSON 字符串中必被转义为 `\u001f`，不可能与分隔符本身混淆；
+ * - 重叠起止入键，同一对 id 只可能产生一处交集，这里仍把完整区间纳入身份，
+ *   使“同一点击位置上的多组争用”各自身份确定，支持逐组选择核对。
+ */
+export function conflictKey(c: Conflict): string {
+  return [
+    JSON.stringify(c.resource),
+    JSON.stringify(c.idA),
+    JSON.stringify(c.idB),
+    c.overlapStart,
+    c.overlapEnd,
+  ].join('\u001f');
+}
+
 /** 便捷类型守卫，供 UI 收窄失败结果。 */
 export function isFailure(result: ValidationResult): result is ValidationFailure {
   return !result.ok;

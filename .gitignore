@@ -10,6 +10,10 @@ dist-ssr/
 .vite/
 coverage/
 
+# 无 root 沙箱内本地运行 Playwright 时下载的系统库与 npm 缓存
+.debs/
+.npm-cache/
+
 # Playwright
 test-results/
 playwright-report/

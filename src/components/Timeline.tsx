@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
 import type { Conflict, CueItem } from '../core/types';
-import { compareByCodePoint } from '../core/conflicts';
+import { compareByCodePoint, conflictKey } from '../core/conflicts';
 import { createTimeScale } from '../core/compactScale';
 import type { TimelineMode, TimeScale } from '../core/compactScale';
+import { pickOverlap } from '../core/overlapHit';
+import type { OverlapHit } from '../core/overlapHit';
 import { formatDuration, formatMs } from '../core/format';
-import { conflictKey } from './ConflictList';
 
 interface TimelineProps {
   items: CueItem[];
@@ -24,6 +25,50 @@ const RULER_HEIGHT_DAY = 28;
 const RULER_HEIGHT_COMPACT = 44;
 /** 显示轴上每 30_000 显示毫秒一道刻度（整日即真实 30 秒；紧凑模式刻度坐标同样取自映射）。 */
 const TICK_DISPLAY_MS = 30_000;
+
+/**
+ * 交集按钮的点击不在元素自身判定归属：浏览器只把叠放区的点击交给最上层按钮，
+ * 这里读取同一资源轨道内全部交集的真实/热区几何，交给纯函数 pickOverlap
+ * 按点击坐标解析——完全重叠的多组争用可逐组轮换，扩展热区互相覆盖时
+ * 归属到用户实际指向的那一组。
+ */
+function resolveOverlapClick(
+  button: HTMLButtonElement,
+  clientX: number,
+  opts: { selectedKey: string | null; fallbackKey: string; onSelect: (key: string | null) => void },
+) {
+  const track = button.closest('.tl-track');
+  if (!track) {
+    opts.onSelect(opts.fallbackKey === opts.selectedKey ? null : opts.fallbackKey);
+    return;
+  }
+
+  const trackRect = track.getBoundingClientRect();
+  const hits: OverlapHit[] = [];
+  track.querySelectorAll<HTMLButtonElement>('button.overlap').forEach((btn) => {
+    const key = btn.dataset.overlapKey;
+    const widthFraction = Number(btn.dataset.realWidthFraction);
+    if (!key || !Number.isFinite(widthFraction)) return;
+    const rect = btn.getBoundingClientRect();
+    // 最小热区只向右扩、不改变左缘，因此热区左缘就是真实交集左缘；
+    // rect.width 已包含紧凑轴的最小热区宽度，真实宽度由映射比例精确给出。
+    const left = rect.left - trackRect.left;
+    hits.push({
+      key,
+      realLeft: left,
+      realWidth: widthFraction * trackRect.width,
+      hotLeft: left,
+      hotWidth: rect.width,
+    });
+  });
+
+  const resolved = pickOverlap(hits, clientX - trackRect.left, opts.selectedKey);
+  if (resolved === undefined) {
+    opts.onSelect(opts.fallbackKey === opts.selectedKey ? null : opts.fallbackKey);
+    return;
+  }
+  opts.onSelect(resolved);
+}
 
 /**
  * 按资源绘制的可滚动时间轴。
@@ -139,24 +184,36 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: Time
               <div className="tl-track">
                 <AxisMarkers scale={scale} />
 
-                {/* 交集区域（点击区域，坐标取自映射；紧凑模式下 1ms 争用仍宽 1px） */}
+                {/* 交集区域（点击区域，坐标取自映射；紧凑模式下 1ms 争用仍宽 1px）。
+                    多个标记可能叠在同一点、或扩展热区互相覆盖，因此点击不在元素自身
+                    判定归属，而由 resolveOverlapClick 按点击坐标在本行全部热区中解析。 */}
                 {rowConflicts.map((c) => {
                   const key = conflictKey(c);
+                  const realLeftFraction = scale.fraction(c.overlapStart);
+                  const realWidthFraction = scale.fractionSpan(c.overlapStart, c.overlapEnd);
                   return (
                     <button
                       type="button"
                       key={`ov-${key}`}
                       className={`overlap${key === selectedKey ? ' active' : ''}`}
                       style={{
-                        left: `${scale.fraction(c.overlapStart) * 100}%`,
-                        width: `${scale.fractionSpan(c.overlapStart, c.overlapEnd) * 100}%`,
+                        left: `${realLeftFraction * 100}%`,
+                        width: `${realWidthFraction * 100}%`,
                         top: 4,
                         height: 18,
                       }}
                       title={`${c.idA} ⨯ ${c.idB}，重叠 ${c.overlapDuration}ms`}
                       aria-label={`冲突：${c.idA} 与 ${c.idB}，重叠 ${c.overlapDuration} 毫秒`}
-                      onClick={() => onSelect(key === selectedKey ? null : key)}
+                      onClick={(event) =>
+                        resolveOverlapClick(event.currentTarget, event.clientX, {
+                          selectedKey,
+                          fallbackKey: key,
+                          onSelect,
+                        })
+                      }
                       data-testid="overlap"
+                      data-overlap-key={key}
+                      data-real-width-fraction={realWidthFraction}
                     />
                   );
                 })}

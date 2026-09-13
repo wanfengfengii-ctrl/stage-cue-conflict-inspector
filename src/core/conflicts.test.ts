@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   compareByCodePoint,
+  conflictKey,
   detectConflicts,
   parseAndValidate,
   validateBatch,
@@ -264,5 +265,65 @@ describe('detectConflicts', () => {
 
   it('空输入（已被校验拦截的情形）返回空数组', () => {
     expect(detectConflicts([])).toEqual([]);
+  });
+});
+
+describe('conflictKey', () => {
+  const make = (
+    resource: string,
+    idA: string,
+    idB: string,
+    overlapStart: number,
+    overlapEnd: number,
+  ) => ({ resource, idA, idB, overlapStart, overlapEnd, overlapDuration: overlapEnd - overlapStart });
+
+  it('同一争用跨渲染稳定相等，不同争用不相等', () => {
+    expect(conflictKey(make('r', 'a', 'b', 0, 10))).toBe(conflictKey(make('r', 'a', 'b', 0, 10)));
+    expect(conflictKey(make('r', 'a', 'b', 0, 10))).not.toBe(conflictKey(make('r', 'a', 'c', 0, 10)));
+  });
+
+  it('编号含合法空字符 U+0000 时两对不同争用不撞键（旧 NUL 分隔键的真实缺陷）', () => {
+    // 旧键以裸 NUL 连接字段；而 JSON 转义 \u0000 可把 NUL 合法放进字符串，于是：
+    //   ("a","x<NUL>y") 的键 == ("a<NUL>x","y") 的键（字节完全相同），
+    // 旧实现点击其中一条会同时高亮两条。新键经 JSON 引号定界，二者必须不同。
+    const first = conflictKey(make('r', 'a', 'x\u0000y', 0, 200));
+    const second = conflictKey(make('r', 'a\u0000x', 'y', 0, 200));
+    expect(first).not.toBe(second);
+  });
+
+  it('资源名含合法空字符 U+0000 同样不撞键', () => {
+    const first = conflictKey(make('r\u0000R', 'a', 'b', 0, 200));
+    const second = conflictKey(make('r', 'a', 'b', 0, 200));
+    expect(first).not.toBe(second);
+  });
+
+  it('字段含空格时朴素拼接会撞的两种切分得到不同身份', () => {
+    // "a"+"b c" 与 "a b"+"c"：朴素空格拼接键完全相同；引号定界后分开
+    const first = conflictKey(make('r', 'a', 'b c', 0, 10));
+    const second = conflictKey(make('r', 'a b', 'c', 0, 10));
+    expect(first).not.toBe(second);
+  });
+
+  it('分隔符 U+001F 不会被字段内容仿冒：字段内的同款字符经 JSON 转义', () => {
+    const sep = '\u001f';
+    const injected = conflictKey(make('r\u001fr', 'a', 'b', 0, 10));
+    const normal = conflictKey(make('r', 'a', 'b', 0, 10));
+    expect(injected).not.toBe(normal);
+    // 键含五个字段；字段内的 U+001F 被 JSON.stringify 转义成 \u001f，
+    // 不会产生额外裸分隔符，切分仍为五段
+    expect(injected.split(sep)).toHaveLength(5);
+    expect(normal.split(sep)).toHaveLength(5);
+  });
+
+  it('资源名含空格时两条不同资源争用不撞键', () => {
+    const one = conflictKey(make('设备 A', 'a', 'b', 0, 10));
+    const two = conflictKey(make('设备', 'a', 'b', 0, 10));
+    expect(one).not.toBe(two);
+  });
+
+  it('同对 id 的不同交集区间身份不同（键含完整重叠区间）', () => {
+    expect(conflictKey(make('r', 'a', 'b', 0, 1))).not.toBe(
+      conflictKey(make('r', 'a', 'b', 5, 6)),
+    );
   });
 });

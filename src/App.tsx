@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { detectConflicts, parseAndValidate } from './core/conflicts';
+import { detectConflicts, parseAndValidate, conflictKey } from './core/conflicts';
 import type { Conflict } from './core/types';
 import type { TimelineMode } from './core/compactScale';
 import { InputPanel } from './components/InputPanel';
-import { ConflictList, conflictKey } from './components/ConflictList';
+import { ConflictList } from './components/ConflictList';
 import { Timeline } from './components/Timeline';
 import { SAMPLE_CONFLICT, SAMPLE_TOUCHING } from './samples';
 import './styles.css';

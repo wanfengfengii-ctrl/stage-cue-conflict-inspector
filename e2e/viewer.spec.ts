@@ -269,3 +269,112 @@ test.describe('紧凑时间轴', () => {
     await expect(page.getByTestId('axis-break')).not.toHaveCount(0);
   });
 });
+
+test.describe('交集热区选择：完全重叠 / 紧凑轴相邻 1ms / 空字符身份', () => {
+  test('同一设备三组争用完全重叠：同一点可逐组选择核对，每次仅一组高亮', async ({ page }) => {
+    // 三条提示完全重叠 → 三对争用（a,b）（a,c）（b,c），交集完全相同，
+    // 三个交集标记叠在同一个点击区域。
+    await page.locator('.json-input').fill(`[
+  { "id": "a", "resource": "灯杆-1", "startMs": 0, "endMs": 86400000 },
+  { "id": "b", "resource": "灯杆-1", "startMs": 0, "endMs": 86400000 },
+  { "id": "c", "resource": "灯杆-1", "startMs": 0, "endMs": 86400000 }
+]`);
+
+    const cards = page.getByTestId('conflict-card');
+    await expect(cards).toHaveCount(3);
+    const overlaps = page.locator('.overlap');
+    await expect(overlaps).toHaveCount(3);
+
+    // 三个标记几何完全一致，始终点同一位置。浏览器只会把该点的点击交给最上层
+    // 按钮（旧实现因此永远只能选中最后一组）；force 绕过 Playwright 的遮挡检查，
+    // 模拟用户在这一点上的真实点击，归属改由坐标解析后即可逐组轮换。
+    const clickStack = () => overlaps.nth(0).click({ force: true });
+
+    await clickStack();
+    await expect(cards.nth(0)).toHaveClass(/active/);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+
+    await clickStack();
+    await expect(cards.nth(0)).not.toHaveClass(/active/);
+    await expect(cards.nth(1)).toHaveClass(/active/);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+
+    await clickStack();
+    await expect(cards.nth(1)).not.toHaveClass(/active/);
+    await expect(cards.nth(2)).toHaveClass(/active/);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+
+    // 最后一组之后再点回到未选中，三组都能被逐组核对
+    await clickStack();
+    await expect(page.locator('.conflict-card.active')).toHaveCount(0);
+    await expect(page.locator('.overlap.active')).toHaveCount(0);
+  });
+
+  test('紧凑轴两处相邻 1ms 争用：扩展热区互相覆盖时点击归属与指向的交集一致', async ({ page }) => {
+    // a[3600000,3601000) b[3600999,3601001) c[3601000,3602000)
+    // 争用1=(a,b) 交集 [3600999,3601000)；争用2=(b,c) 交集 [3601000,3601001)；
+    // a 与 c 贴边不冲突。两处 1ms 争用仅相距 1ms，6px 最小热区几乎完全重合。
+    await page.locator('.json-input').fill(`[
+  { "id": "a", "resource": "雾机", "startMs": 3600000, "endMs": 3601000 },
+  { "id": "b", "resource": "雾机", "startMs": 3600999, "endMs": 3601001 },
+  { "id": "c", "resource": "雾机", "startMs": 3601000, "endMs": 3602000 }
+]`);
+    await page.getByTestId('mode-toggle').click();
+
+    const cards = page.getByTestId('conflict-card');
+    await expect(cards).toHaveCount(2);
+    const first = page.locator('.overlap').nth(0);
+    const second = page.locator('.overlap').nth(1);
+
+    // 点前一个标记的中心：它与后一个标记的 6px 热区重叠，浏览器会把点击交给
+    // DOM 更上层的后者（旧实现因此误选后一处）。force 绕过遮挡检查，归属按坐标解析。
+    await first.click({ force: true });
+    await expect(cards.nth(0)).toHaveClass(/active/);
+    await expect(cards.nth(1)).not.toHaveClass(/active/);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+
+    // 点后一个标记的中心则选中后一个
+    await second.click({ force: true });
+    await expect(cards.nth(0)).not.toHaveClass(/active/);
+    await expect(cards.nth(1)).toHaveClass(/active/);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+  });
+
+  test('资源名/编号含合法空字符(U+0000)：选择一条争用只高亮该争用，不与撞键的另一条联动', async ({ page }) => {
+    // 旧选择键的字段分隔符本身就是 NUL；JSON 转义 u0000 是合法字符串内容，
+    // 因而 ("a","x<NUL>y") 与 ("a<NUL>x","y") 两对不同争用得到完全相同的键，
+    // 旧实现点击其中一条会同时高亮两条（两张卡片、两个交集）。
+    await page.locator('.json-input').fill(`[
+  { "id": "a", "resource": "r", "startMs": 0, "endMs": 200 },
+  { "id": "x\\u0000y", "resource": "r", "startMs": 0, "endMs": 200 },
+  { "id": "a\\u0000x", "resource": "r", "startMs": 0, "endMs": 200 },
+  { "id": "y", "resource": "r", "startMs": 0, "endMs": 200 }
+]`);
+
+    await expect(page.getByTestId('conflict-card')).toHaveCount(6);
+
+    // NUL 无法走常规文本定位器：在页面内按 code 精确匹配后用 DOM 点击
+    // 选中 a ⨯ x<NUL>y 这一张
+    const clickResult = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.conflict-card')] as HTMLButtonElement[];
+      const card = cards.find((el) => {
+        const codes = [...el.querySelectorAll('code')].map((c) => c.textContent ?? '');
+        return codes.includes('a') && codes.includes('x\u0000y');
+      });
+      if (!card) return 'not-found';
+      card.click();
+      return 'clicked';
+    });
+    expect(clickResult).toBe('clicked');
+
+    // 只有一张卡片、一个交集激活（旧实现为 2/2）
+    await expect(page.locator('.conflict-card.active')).toHaveCount(1);
+    await expect(page.locator('.overlap.active')).toHaveCount(1);
+
+    // 激活的交集正是所点击的 a ⨯ x<NUL>y（用 JSON 比较以显式承载 NUL）
+    const activeLabel = await page
+      .locator('.overlap.active')
+      .evaluate((el) => JSON.stringify(el.getAttribute('aria-label')));
+    expect(activeLabel).toBe(JSON.stringify('冲突：a 与 x\u0000y，重叠 200 毫秒'));
+  });
+});
