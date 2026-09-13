@@ -204,4 +204,27 @@ describe('编辑 / 粘贴 / 载入示例清除聚焦', () => {
     expect(screen.getByTestId('all-clear')).toBeTruthy();
     expect(document.querySelectorAll('.overlap')).toHaveLength(0);
   });
+
+  it('再次载入与当前完全相同的示例：text 未变也要退出聚焦并恢复整日', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '载入示例（含冲突）' }));
+    const cards = screen.getAllByTestId('conflict-card');
+
+    fireEvent.click(cards[0]!);
+    fireEvent.click(screen.getByTestId('focus-button'));
+    fireEvent.click(screen.getByTestId('mode-toggle'));
+    expect(screen.getByTestId('timeline-inner').getAttribute('data-mode')).toBe('compact');
+    expect(screen.getByTestId('focus-banner')).toBeTruthy();
+
+    // 再次点同一个“载入示例（含冲突）”：文本字符串与当前相同，
+    // 但“载入”本身是明确动作，仍必须清除聚焦、恢复整日
+    fireEvent.click(screen.getByRole('button', { name: '载入示例（含冲突）' }));
+    expect(screen.queryByTestId('focus-banner')).toBeNull();
+    expect(screen.queryByTestId('focus-notice')).toBeNull();
+    expect(screen.getByTestId('timeline-inner').getAttribute('data-mode')).toBe('day');
+    expect(screen.getByTestId('mode-toggle').textContent).toContain('紧凑时间轴');
+    // 重新载入后选中态也清空，示例结果照常呈现（2 处冲突）
+    expect(document.querySelectorAll('.conflict-card.active')).toHaveLength(0);
+    expect(screen.getAllByTestId('conflict-card')).toHaveLength(2);
+  });
 });

@@ -492,4 +492,23 @@ test.describe('聚焦上下文：选中争用 → 聚焦 → 紧凑 → 退出�
     // 载入后是示例自身的结果（2 处冲突），未沿用旧批次
     await expect(page.getByTestId('status')).toContainText('发现 2 处设备争用');
   });
+
+  test('再次载入与当前完全相同的示例：即使文本未变也退出聚焦并恢复整日', async ({ page }) => {
+    // 用户实际路径：载入含冲突示例 → 选中争用 → 聚焦 → 切紧凑 → 再次载入同一示例
+    await page.getByRole('button', { name: '载入示例（含冲突）' }).click();
+    await page.getByTestId('conflict-card').first().click();
+    await page.getByTestId('focus-button').click();
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    await expect(page.getByTestId('focus-banner')).toBeVisible();
+
+    // 再次点击同一个示例按钮：文本字符串完全相同，仍必须退出聚焦、恢复整日
+    await page.getByRole('button', { name: '载入示例（含冲突）' }).click();
+    await expect(page.getByTestId('focus-banner')).toHaveCount(0);
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'day');
+    await expect(page.getByTestId('mode-toggle')).toContainText('紧凑时间轴');
+    // 选中态清空，示例结果照常
+    await expect(page.locator('.conflict-card.active')).toHaveCount(0);
+    await expect(page.getByTestId('conflict-card')).toHaveCount(2);
+  });
 });

@@ -43,14 +43,20 @@ export default function App() {
   // 窗口由领域层确定：锚冲突交集两侧各扩三十秒，并夹到当天范围
   const focusWindow: FocusWindow | null = focusConflict ? createFocusWindow(focusConflict) : null;
 
-  // 文本一旦变化（重新解析/编辑 JSON/粘贴/载入示例）即清除选中态与聚焦、恢复整日模式，
-  // 避免高亮/窗口指向已不存在的冲突；切换显示模式本身不走这里，选择与窗口得以保留。
-  useEffect(() => {
+  // 编辑 / 粘贴 / 载入示例统一入口：只要“载入/修改动作”发生，就清除选择与聚焦、
+  // 恢复整日模式。不能只依赖 useEffect([text])——再次载入与当前完全相同的示例时
+  // text 字符串不变、effect 不会运行，聚焦与紧凑状态会错误残留。
+  const resetViewState = () => {
     setSelectedKey(null);
     setFocusKey(null);
     setMode('day');
     setNotice(null);
-  }, [text]);
+  };
+
+  const handleTextChange = (next: string) => {
+    resetViewState();
+    setText(next);
+  };
 
   // 若选中（或聚焦锚点）的冲突在结果中消失，同样清除
   useEffect(() => {
@@ -63,6 +69,8 @@ export default function App() {
   }, [conflicts, selectedKey, focusKey]);
 
   const loadSample = (which: 'conflict' | 'touching') => {
+    // 即使载入的示例与当前文本完全相同，也走重置（见 resetViewState 说明）
+    resetViewState();
     setText(which === 'conflict' ? SAMPLE_CONFLICT : SAMPLE_TOUCHING);
   };
 
@@ -121,7 +129,7 @@ export default function App() {
       </header>
 
       <main className="layout">
-        <InputPanel text={text} onTextChange={setText} issues={result.ok ? [] : result.issues} onLoadSample={loadSample} />
+        <InputPanel text={text} onTextChange={handleTextChange} issues={result.ok ? [] : result.issues} onLoadSample={loadSample} />
 
         <section className="panel result-panel" aria-label="检测结果">
           {text.trim().length === 0 ? (
