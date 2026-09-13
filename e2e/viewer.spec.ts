@@ -142,10 +142,29 @@ test.describe('紧凑时间轴', () => {
     await expect(breaks.first()).toHaveAttribute('data-real-end', '3600000');
     await expect(breaks.first()).toHaveAttribute('title', /空档 00:00\.000 至 60:00\.000/);
 
-    // 压缩固定为三十秒显示宽：紧凑模式 1 显示毫秒 = 1px，故空档宽恰为 30000px
-    // （真实时长 3600000ms，压缩 120 倍）；刻度/标记坐标全部取自同一映射
-    const firstBreakWidth = await breaks.first().evaluate((el) => el.getBoundingClientRect().width);
-    expect(firstBreakWidth).toBeCloseTo(30_000, -1);
+    // 压缩固定为三十秒显示宽：映射比例 30000/62000 ≈ 48.4% 落在可见轨道内，
+    // 整体随轨道等比缩放，不再是 30000 物理像素（无需横向滚动数十屏）
+    const dims = await breaks.first().evaluate((el) => {
+      const canvas = el.closest('.tl-track') ?? el.parentElement!;
+      return {
+        marker: el.getBoundingClientRect().width,
+        canvas: canvas.getBoundingClientRect().width,
+      };
+    });
+    expect(dims.marker / dims.canvas).toBeCloseTo(30_000 / 62_000, 1);
+    expect(dims.marker).toBeLessThan(1000);
+
+    // 整体等比缩放铺满面板：紧凑时间轴不得出现横向滚动，提示块也不再是数万像素
+    const overflow = await page.getByTestId('timeline-scroll').evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+
+    const cueWidths = await page.locator('.cue-block').evaluateAll((nodes) =>
+      nodes.map((n) => n.getBoundingClientRect().width),
+    );
+    for (const w of cueWidths) expect(w).toBeLessThan(1000);
 
     // 刻度上仍能读到真实时刻 60:00.000（占用片段起点），而不是被压缩后的伪时刻
     await expect(page.locator('.timeline-ruler')).toContainText('60:00.000');
@@ -158,12 +177,12 @@ test.describe('紧凑时间轴', () => {
     const overlap = page.locator('.overlap');
     await expect(overlap).toHaveCount(1);
 
-    // 压缩后 1ms 交集约占 1px（边框与亚像素舍入下测量为 1~2px），
-    // 对比整日模式下不足 0.02px：此处终于可以逐毫秒点中
+    // 整体随轨道等比缩放后，1ms 交集物理宽度不足 1px；
+    // 紧凑模式为其提供 6px 最小点击热区（位置仍精确取自映射），因此可逐毫秒点中
     const box = await overlap.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.width).toBeGreaterThanOrEqual(0.9);
-    expect(box!.width).toBeLessThan(3);
+    expect(box!.width).toBeGreaterThanOrEqual(5.5);
+    expect(box!.width).toBeLessThan(8);
     await overlap.click();
 
     // 时间轴交集高亮，且唯一一张冲突卡片同步激活（同一争用）

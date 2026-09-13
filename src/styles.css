@@ -308,6 +308,17 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.tick-end {
+  padding-left: 0;
+}
+
+.tick-end .tick-label {
+  position: static;
+  display: inline-block;
+  padding-right: 3px;
+  transform: translateX(-100%);
+}
+
 .tl-row {
   display: flex;
   align-items: stretch;
@@ -454,6 +465,24 @@ button {
 .overlap.active {
   box-shadow: 0 0 0 2px #fff, 0 0 10px 2px var(--warn);
   z-index: 2;
+}
+
+/* 紧凑模式整体等比缩放进视图：去掉最小宽度，压缩时间轴直接铺满面板，无需横向滚动 */
+.timeline-inner[data-mode='compact'] {
+  min-width: 0;
+}
+
+.timeline-inner[data-mode='compact'] .tl-track,
+.timeline-inner[data-mode='compact'] .ruler-canvas {
+  min-width: 0;
+  /* 末端刻度文字与最小点击热区可能越出轨道右缘，紧凑模式下裁掉，不产生横向滚动 */
+  overflow: hidden;
+}
+
+/* 紧凑模式整体等比缩放进视图后，1ms 的真实交集物理宽度不足 1px：
+   位置仍精确取自映射，仅把点击热区扩展到至少 6px（向右微扩，不改变左缘定位）。 */
+.timeline-inner[data-mode='compact'] .overlap {
+  min-width: 6px;
 }
 
 /* 冲突列表 */

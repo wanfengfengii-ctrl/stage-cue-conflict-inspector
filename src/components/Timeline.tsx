@@ -22,7 +22,6 @@ interface ResourceRow {
 const ROW_HEIGHT = 56;
 const RULER_HEIGHT_DAY = 28;
 const RULER_HEIGHT_COMPACT = 44;
-const LABEL_WIDTH = 130;
 /** 显示轴上每 30_000 显示毫秒一道刻度（整日即真实 30 秒；紧凑模式刻度坐标同样取自映射）。 */
 const TICK_DISPLAY_MS = 30_000;
 
@@ -95,38 +94,29 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: Time
   }, [scale]);
 
   const rulerHeight = mode === 'compact' ? RULER_HEIGHT_COMPACT : RULER_HEIGHT_DAY;
-  // 紧凑模式以 1 显示毫秒 = 1px 定宽（含左侧资源标签），因此占用段内 1ms 的真实争用仍占 1px，
-  // 可被逐毫秒点中；容器自身横向滚动。整日模式保持弹性最小宽度。
-  const compactInnerWidth = mode === 'compact' ? LABEL_WIDTH + scale.totalDisplay : undefined;
-  const trackStyle =
-    mode === 'compact'
-      ? ({ width: scale.totalDisplay, minWidth: 0, flex: '0 0 auto' } as const)
-      : undefined;
+  // 所有横向坐标都是相对整条轨道的百分比：
+  // 映射只规定【相对比例】（占用与短空档等比、长空档固定三十秒显示宽），
+  // 轨道在视图内弹性铺宽，整体再等比缩放——紧凑后无需横向滚动数十屏。
+  // 1ms 交集在 CSS 上另有最小点击热区（见 styles.css），保证逐毫秒可点。
 
   return (
     <div className="timeline-scroll" data-testid="timeline-scroll" tabIndex={0}>
-      <div
-        className="timeline-inner"
-        data-testid="timeline-inner"
-        data-mode={mode}
-        style={
-          compactInnerWidth !== undefined
-            ? { width: compactInnerWidth, minWidth: compactInnerWidth }
-            : undefined
-        }
-      >
+      <div className="timeline-inner" data-testid="timeline-inner" data-mode={mode}>
         <div className="timeline-ruler" style={{ height: rulerHeight }}>
           <div className="tl-label ruler-label" aria-hidden="true" />
-          <div className="ruler-canvas" style={trackStyle}>
-            {ticks.map((t) => (
-              <div
-                key={t.display}
-                className="tick"
-                style={{ left: `${(t.display / scale.totalDisplay) * 100}%` }}
-              >
-                <span className="tick-label">{formatMs(t.real)}</span>
-              </div>
-            ))}
+          <div className="ruler-canvas">
+            {ticks.map((t) => {
+              const isEnd = t.display === scale.totalDisplay;
+              return (
+                <div
+                  key={t.display}
+                  className={`tick${isEnd ? ' tick-end' : ''}`}
+                  style={{ left: `${(t.display / scale.totalDisplay) * 100}%` }}
+                >
+                  <span className="tick-label">{formatMs(t.real)}</span>
+                </div>
+              );
+            })}
             <AxisMarkers scale={scale} withLabels />
           </div>
         </div>
@@ -146,7 +136,7 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: Time
               <div className="tl-label" title={row.resource}>
                 {row.resource}
               </div>
-              <div className="tl-track" style={trackStyle}>
+              <div className="tl-track">
                 <AxisMarkers scale={scale} />
 
                 {/* 交集区域（点击区域，坐标取自映射；紧凑模式下 1ms 争用仍宽 1px） */}
