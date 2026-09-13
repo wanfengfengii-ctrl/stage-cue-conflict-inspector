@@ -3,6 +3,8 @@ import type { Conflict, CueItem } from '../core/types';
 import { compareByCodePoint, conflictKey } from '../core/conflicts';
 import { createTimeScale } from '../core/compactScale';
 import type { TimelineMode, TimeScale } from '../core/compactScale';
+import { intersectsRange } from '../core/focusWindow';
+import type { FocusWindow } from '../core/focusWindow';
 import { pickOverlap } from '../core/overlapHit';
 import type { OverlapHit } from '../core/overlapHit';
 import { formatDuration, formatMs } from '../core/format';
@@ -13,6 +15,8 @@ interface TimelineProps {
   mode: TimelineMode;
   selectedKey: string | null;
   onSelect: (key: string | null) => void;
+  /** 聚焦窗口（半开）：给定后时间轴只呈现与其相交的提示与冲突；null 表示整日演出。 */
+  window: FocusWindow | null;
 }
 
 interface ResourceRow {
@@ -76,13 +80,41 @@ function resolveOverlapClick(
  * 整日模式等比例映射全天，紧凑模式把超过五分钟的空档压成固定三十秒显示宽。
  * 选择某条冲突时：双方提示块与交集区域同步高亮（列表与时间轴共用 selectedKey）。
  */
-export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: TimelineProps) {
-  // 映射只由“模式 + 当前合法结果”派生，永不改写提示本身
-  const scale = useMemo(() => createTimeScale(mode, items), [mode, items]);
+export function Timeline({ items, conflicts, mode, selectedKey, onSelect, window: focusWindow }: TimelineProps) {
+  // 映射只由“模式 + 当前合法结果 + 聚焦窗口”派生，永不改写提示本身。
+  // 聚焦窗口只把映射的覆盖区间收窄到 [window.startMs, window.endMs)，
+  // 窗口内整日等比例 / 紧凑压缩规则不变；切模式只重算坐标。
+  const scale = useMemo(
+    () => createTimeScale(mode, items, focusWindow ?? undefined),
+    [mode, items, focusWindow],
+  );
+
+  // 窗口内只呈现【与其半开相交】的提示：恰好贴边（end === 窗口起点等）不算。
+  // 不过滤原数组、不改写任何字段；跨边界图形的几何由窗口映射自然裁短，
+  // 标签（id）与绝对毫秒值保持原样。null 窗口 = 整日演出，全部呈现。
+  const visibleItems = useMemo(
+    () =>
+      focusWindow
+        ? items.filter((it) => intersectsRange(it.startMs, it.endMs, focusWindow.startMs, focusWindow.endMs))
+        : items,
+    [items, focusWindow],
+  );
+
+  // 窗口内的冲突同样按交集的半开相交过滤（锚点冲突必与其窗口相交）；
+  // 冲突列表仍消费原有 Conflict 对象，这里只决定时间轴上画哪些交集。
+  const visibleConflicts = useMemo(
+    () =>
+      focusWindow
+        ? conflicts.filter((c) =>
+            intersectsRange(c.overlapStart, c.overlapEnd, focusWindow.startMs, focusWindow.endMs),
+          )
+        : conflicts,
+    [conflicts, focusWindow],
+  );
 
   const rows = useMemo<ResourceRow[]>(() => {
     const map = new Map<string, CueItem[]>();
-    for (const item of items) {
+    for (const item of visibleItems) {
       const list = map.get(item.resource);
       if (list) list.push(item);
       else map.set(item.resource, [item]);
@@ -93,7 +125,7 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: Time
         items: [...list].sort((a, b) => a.startMs - b.startMs || compareByCodePoint(a.id, b.id)),
       }))
       .sort((a, b) => compareByCodePoint(a.resource, b.resource));
-  }, [items]);
+  }, [visibleItems]);
 
   // 为每个资源内的提示块分配泳道，避免同资源多条提示重叠时块互相覆盖
   const lanes = useMemo(() => {
@@ -169,7 +201,7 @@ export function Timeline({ items, conflicts, mode, selectedKey, onSelect }: Time
         {rows.map((row) => {
           const placed = lanes.get(row.resource)!;
           const maxLane = Math.max(0, ...placed.map((p) => p.lane));
-          const rowConflicts = conflicts.filter((c) => c.resource === row.resource);
+          const rowConflicts = visibleConflicts.filter((c) => c.resource === row.resource);
           const hasActive = rowConflicts.some((c) => conflictKey(c) === selectedKey);
 
           return (

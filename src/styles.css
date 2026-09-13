@@ -258,6 +258,61 @@ button {
   color: var(--text-dim);
 }
 
+/* 聚焦上下文 */
+.focus-toggle {
+  background: #2a2440;
+  color: var(--text);
+  border: 1px solid #5a4a8a;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+
+.focus-toggle:hover {
+  border-color: #b79bff;
+}
+
+.focus-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #1f1830;
+  border: 1px solid #5a4a8a;
+  border-radius: 6px;
+  padding: 4px 6px 4px 10px;
+  flex-wrap: wrap;
+}
+
+.focus-banner-text {
+  font-size: 12px;
+  color: #c9bbf2;
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-exit {
+  background: #3a2f58;
+  color: var(--text);
+  border: 1px solid #7a66b8;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  flex: none;
+}
+
+.focus-exit:hover {
+  border-color: #b79bff;
+}
+
+.focus-notice {
+  margin-bottom: 8px;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  background: #3a2f18;
+  border: 1px solid #ffd23f66;
+  color: var(--cue-hot);
+}
+
 .timeline-scroll {
   overflow-x: auto;
   overflow-y: auto;

@@ -210,3 +210,84 @@ describe('紧凑模式：边界退化', () => {
     expect(b.totalDisplay).toBe(a.totalDisplay);
   });
 });
+
+describe('聚焦窗口：映射只覆盖窗口区间（投影确定性）', () => {
+  // 提示分布在 01:00、05:00、20:00 三段（见 multiClusterItems）
+  const win = { startMs: 3_570_000, endMs: 3_730_000 }; // 00:59:30 ~ 01:02:10
+
+  it('整日模式 + 窗口：映射退化为窗口内等比例，窗口起止映射到 0 与窗口宽', () => {
+    const scale = createTimeScale('day', multiClusterItems(), win);
+    expect(scale.totalDisplay).toBe(win.endMs - win.startMs);
+    expect(scale.compressedGaps).toHaveLength(0);
+    expect(scale.toDisplay(win.startMs)).toBe(0);
+    expect(scale.toDisplay(win.endMs)).toBe(win.endMs - win.startMs);
+    // 窗口内 1 真实毫秒 = 1 显示毫秒
+    expect(scale.toDisplay(win.startMs + 123)).toBe(123);
+    expect(scale.toReal(123)).toBe(win.startMs + 123);
+    expect(scale.fraction(win.startMs)).toBe(0);
+    expect(scale.fraction(win.endMs)).toBe(1);
+    expect(scale.fractionSpan(3_600_000, 3_601_000)).toBeCloseTo(1000 / 160_000, 10);
+  });
+
+  it('紧凑模式 + 窗口：只合并窗口内相交的占用，窗口外提示（05:00/20:00）不产生任何空档压缩', () => {
+    const scale = createTimeScale('compact', multiClusterItems(), win);
+    // 窗口内只有并集 3_600_000..3_700_000 一段；两侧短空档（各 30s）不压缩
+    expect(scale.compressedGaps).toHaveLength(0);
+    expect(scale.segments.map((s) => s.kind)).toEqual(['gap', 'occupied', 'gap']);
+    expect(scale.segments[0]).toMatchObject({ realStart: 3_570_000, realEnd: 3_600_000 });
+    expect(scale.segments[1]).toMatchObject({ realStart: 3_600_000, realEnd: 3_700_000 });
+    expect(scale.segments[2]).toMatchObject({ realStart: 3_700_000, realEnd: 3_730_000 });
+    expect(scale.totalDisplay).toBe(win.endMs - win.startMs);
+  });
+
+  it('跨窗口边界的占用并集被裁进窗口：锚冲突交集恰在边界贴边（半开）时投影确定', () => {
+    // 占用 a 跨左缘、b 完全在内；合并后并集 [3_500_000, 3_700_000)，裁到窗口为 [3_570_000, 3_700_000)
+    const items = [cue('a', 3_500_000, 3_620_000), cue('b', 3_620_000, 3_700_000)];
+    const scale = createTimeScale('compact', items, win);
+    const occupied = scale.segments.filter((s) => s.kind === 'occupied');
+    expect(occupied).toHaveLength(1);
+    expect(occupied[0]).toMatchObject({ realStart: 3_570_000, realEnd: 3_700_000 });
+    // 恰好贴边窗口左缘的提示（end === win.start）不进入并集
+    const touching = [...items, cue('t', 3_000_000, win.startMs)];
+    const scale2 = createTimeScale('compact', touching, win);
+    expect(scale2.segments).toEqual(scale.segments);
+  });
+
+  it('窗口内长空档照常压缩，窗口外的日首/日尾空档不再出现', () => {
+    // 窗口 00:59:30..01:06:00：窗口内占用 01:00..01:01:40 与 01:05:20.001..01:05:30，
+    // 中间空档 01:01:40..01:05:20.001 = 310_001ms（严格超过五分钟）被压缩；
+    // 窗口两侧各 30 秒短空档保持等比例，窗口外不再有日首/日尾长空档。
+    const items = [cue('a', 3_600_000, 3_610_000), cue('b', 3_920_001, 3_930_000)];
+    const w = { startMs: 3_570_000, endMs: 3_960_000 };
+    const scale = createTimeScale('compact', items, w);
+    expect(scale.compressedGaps).toHaveLength(1);
+    expect(scale.compressedGaps[0]).toMatchObject({ realStart: 3_610_000, realEnd: 3_920_001 });
+    expect(scale.compressedGaps[0].displayEnd - scale.compressedGaps[0].displayStart).toBe(
+      COMPRESSED_GAP_DISPLAY_MS,
+    );
+    // 首尾分段严格停在窗口边界，而不是 0 / MS_PER_DAY
+    expect(scale.segments[0].realStart).toBe(w.startMs);
+    expect(scale.segments[scale.segments.length - 1].realEnd).toBe(w.endMs);
+  });
+
+  it('日界窗口 [0, x) 与 (x, MS_PER_DAY] 下投影边界确定且可往返', () => {
+    const fromMidnight = { startMs: 0, endMs: 60_000 };
+    const s1 = createTimeScale('day', multiClusterItems(), fromMidnight);
+    expect(s1.toDisplay(0)).toBe(0);
+    expect(s1.toDisplay(60_000)).toBe(60_000);
+    expect(s1.totalDisplay).toBe(60_000);
+
+    const toMidnight = { startMs: MS_PER_DAY - 60_000, endMs: MS_PER_DAY };
+    const s2 = createTimeScale('compact', multiClusterItems(), toMidnight);
+    expect(s2.toDisplay(toMidnight.startMs)).toBe(0);
+    expect(s2.toDisplay(MS_PER_DAY)).toBe(60_000);
+    expect(s2.toReal(s2.toDisplay(MS_PER_DAY))).toBeCloseTo(MS_PER_DAY, 6);
+  });
+
+  it('同一窗口与输入重复构建结果完全一致（确定性）', () => {
+    const a = createTimeScale('compact', multiClusterItems(), win);
+    const b = createTimeScale('compact', multiClusterItems(), { ...win });
+    expect(b.segments).toEqual(a.segments);
+    expect(b.totalDisplay).toBe(a.totalDisplay);
+  });
+});

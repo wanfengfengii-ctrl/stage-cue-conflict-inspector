@@ -340,8 +340,7 @@ test.describe('交集热区选择：完全重叠 / 紧凑轴相邻 1ms / 空字�
     await expect(page.locator('.overlap.active')).toHaveCount(1);
   });
 
-  test('资源名/编号含合法空字符(U+0000)：选择一条争用只高亮该争用，不与撞键的另一条联动', async ({ page }) => {
-    // 旧选择键的字段分隔符本身就是 NUL；JSON 转义 u0000 是合法字符串内容，
+  test('资源名/编号含合法空字符(U+0000)：选择一条争用只高亮该争用，不与撞键的另一条联动', async ({ page }) => {    // 旧选择键的字段分隔符本身就是 NUL；JSON 转义 u0000 是合法字符串内容，
     // 因而 ("a","x<NUL>y") 与 ("a<NUL>x","y") 两对不同争用得到完全相同的键，
     // 旧实现点击其中一条会同时高亮两条（两张卡片、两个交集）。
     await page.locator('.json-input').fill(`[
@@ -376,5 +375,121 @@ test.describe('交集热区选择：完全重叠 / 紧凑轴相邻 1ms / 空字�
       .locator('.overlap.active')
       .evaluate((el) => JSON.stringify(el.getAttribute('aria-label')));
     expect(activeLabel).toBe(JSON.stringify('冲突：a 与 x\u0000y，重叠 200 毫秒'));
+  });
+});
+
+test.describe('聚焦上下文：选中争用 → 聚焦 → 紧凑 → 退出聚焦', () => {
+  // 锚冲突 (a,b) 交集 [630000,660000) → 聚焦窗口固定 [600000,690000)。
+  // t 跨窗口右边界（start 680000，与 b 贴边后段不相交）；
+  // e 的 end 恰好等于窗口左缘（贴边，不入窗）；d 远在 22:13，雾机两组远在他处。
+  const FOCUS_SCENARIO = `[
+  { "id": "a", "resource": "灯杆-1", "startMs": 600000, "endMs": 660000 },
+  { "id": "b", "resource": "灯杆-1", "startMs": 630000, "endMs": 670000 },
+  { "id": "t", "resource": "灯杆-1", "startMs": 680000, "endMs": 750000 },
+  { "id": "e", "resource": "灯杆-1", "startMs": 500000, "endMs": 600000 },
+  { "id": "d", "resource": "远处-灯杆", "startMs": 80000000, "endMs": 80100000 },
+  { "id": "f", "resource": "雾机-上场门", "startMs": 60000000, "endMs": 60100000 },
+  { "id": "g", "resource": "雾机-上场门", "startMs": 60050000, "endMs": 60200000 }
+]`;
+
+  test('主链路：从选中争用聚焦，窗口只留相交内容，切紧凑只重算坐标，退出恢复完整演出且选择保留', async ({ page }) => {
+    await page.locator('.json-input').fill(FOCUS_SCENARIO);
+
+    const cards = page.getByTestId('conflict-card');
+    await expect(cards).toHaveCount(2);
+    const order = () => cards.locator('[data-testid="conflict-resource"]').allTextContents();
+    await expect(order()).resolves.toEqual(['灯杆-1', '雾机-上场门']);
+
+    // 完整演出：7 条提示、2 个交集
+    await expect(page.locator('.cue-block')).toHaveCount(7);
+    await expect(page.locator('.overlap')).toHaveCount(2);
+
+    // 选中锚争用后出现“聚焦上下文”入口
+    await cards.first().click();
+    await expect(cards.first()).toHaveClass(/active/);
+    const focusButton = page.getByTestId('focus-button');
+    await expect(focusButton).toBeVisible();
+    await focusButton.click();
+
+    // 进入聚焦：横幅给出由领域层确定的窗口起止（交集两侧各三十秒）
+    const banner = page.getByTestId('focus-banner');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText('10:00.000');
+    await expect(banner).toContainText('11:30.000');
+    await expect(page.getByTestId('focus-button')).toHaveCount(0);
+
+    // 窗口内只呈现相交的提示（a、b 内含，t 跨右边界裁短）；
+    // e 恰好贴边窗口左缘（半开不相交）、d 远在他处，均不呈现
+    const visibleTitles = await page.locator('.cue-block').evaluateAll((nodes) =>
+      nodes.map((n) => (n as HTMLElement).title),
+    );
+    expect(visibleTitles.map((t) => t[0]).sort()).toEqual(['a', 'b', 't']);
+    // 跨边界图形裁短，但标签与绝对毫秒值原样：t 的真实 endMs 仍是 750000（12:30.000）
+    expect(visibleTitles.find((t) => t.startsWith('t'))).toBe('t [11:20.000 → 12:30.000)');
+
+    // t 被裁短：右缘停在窗口终点 690000（11:30），而不是自身 750000
+    const tBox = await page.locator('.cue-block').filter({ hasText: 't' }).first().boundingBox();
+    const trackBox = await page.locator('.tl-track').first().boundingBox();
+    expect(tBox && trackBox).toBeTruthy();
+    expect(tBox!.x + tBox!.width).toBeCloseTo(trackBox!.x + trackBox!.width, 1);
+
+    // 窗口内只画锚冲突那一个交集；冲突列表仍是原有两个对象、原有顺序与身份
+    await expect(page.locator('.overlap')).toHaveCount(1);
+    await expect(cards).toHaveCount(2);
+    await expect(order()).resolves.toEqual(['灯杆-1', '雾机-上场门']);
+    await expect(cards.first()).toHaveClass(/active/);
+
+    // 聚焦期间切到紧凑：data-mode 变化（只重算坐标），窗口横幅、窗口内元素、选中项不变
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    await expect(banner).toBeVisible();
+    await expect(page.locator('.cue-block')).toHaveCount(3);
+    await expect(page.locator('.overlap')).toHaveCount(1);
+    await expect(cards.first()).toHaveClass(/active/);
+    // 切紧凑没有改写半开区间判定与冲突顺序
+    await expect(order()).resolves.toEqual(['灯杆-1', '雾机-上场门']);
+
+    // 退出聚焦：完整演出恢复，模式保持紧凑（退出与显示模式正交），选中项原样保留
+    await page.getByTestId('exit-focus').click();
+    await expect(page.getByTestId('focus-banner')).toHaveCount(0);
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    await expect(page.locator('.cue-block')).toHaveCount(7);
+    await expect(page.locator('.overlap')).toHaveCount(2);
+    await expect(cards.first()).toHaveClass(/active/);
+  });
+
+  test('聚焦期间在列表选中窗口外争用：就近反馈并退出聚焦；载入示例清除聚焦并恢复整日', async ({ page }) => {
+    await page.locator('.json-input').fill(FOCUS_SCENARIO);
+    const cards = page.getByTestId('conflict-card');
+
+    await cards.first().click();
+    await page.getByTestId('focus-button').click();
+    await expect(page.getByTestId('focus-banner')).toBeVisible();
+
+    // 在冲突列表点选窗口外的“雾机-上场门”争用：选择在当前窗口失效
+    await cards.nth(1).click();
+    const notice = page.getByTestId('focus-notice');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('不在当前聚焦窗口内');
+    await expect(notice).toContainText('已退出聚焦');
+    await expect(page.getByTestId('focus-banner')).toHaveCount(0);
+    // 退出后在完整演出中定位到该争用
+    await expect(cards.nth(1)).toHaveClass(/active/);
+    await expect(page.locator('.cue-block')).toHaveCount(7);
+
+    // 再次聚焦并进紧凑，随后载入示例：清除聚焦并恢复整日模式
+    await cards.first().click();
+    await page.getByTestId('focus-button').click();
+    await page.getByTestId('mode-toggle').click();
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'compact');
+    await expect(page.getByTestId('focus-banner')).toBeVisible();
+
+    await page.getByRole('button', { name: '载入示例（含冲突）' }).click();
+    await expect(page.getByTestId('focus-banner')).toHaveCount(0);
+    await expect(page.getByTestId('focus-notice')).toHaveCount(0);
+    await expect(page.getByTestId('timeline-inner')).toHaveAttribute('data-mode', 'day');
+    await expect(page.getByTestId('mode-toggle')).toContainText('紧凑时间轴');
+    // 载入后是示例自身的结果（2 处冲突），未沿用旧批次
+    await expect(page.getByTestId('status')).toContainText('发现 2 处设备争用');
   });
 });

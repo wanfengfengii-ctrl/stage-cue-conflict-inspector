@@ -1,5 +1,7 @@
 import type { CueItem } from './types';
 import { MS_PER_DAY } from './types';
+import type { FocusWindow } from './focusWindow';
+import { intersectsRange } from './focusWindow';
 
 /**
  * 紧凑时间轴的确定性分段映射。
@@ -94,6 +96,9 @@ function finishScale(
   compressedGaps: CompressedGap[],
 ): TimeScale {
   const totalDisplay = segments.length > 0 ? segments[segments.length - 1].displayEnd : 0;
+  // 映射覆盖的真实区间：整日模式为 [0, MS_PER_DAY]，聚焦模式为聚焦窗口。
+  const realMin = segments.length > 0 ? segments[0].realStart : 0;
+  const realMax = segments.length > 0 ? segments[segments.length - 1].realEnd : MS_PER_DAY;
 
   const locate = (value: number, by: 'real' | 'display'): ScaleSegment => {
     // 分段有序且数量很小（长空档数量级），顺序查找即可，结果对同一输入确定性可复现。
@@ -121,7 +126,7 @@ function finishScale(
   };
 
   const toDisplay = (ms: number): number => {
-    const clamped = Math.max(0, Math.min(MS_PER_DAY, ms));
+    const clamped = Math.max(realMin, Math.min(realMax, ms));
     return interpolate(locate(clamped, 'real'), clamped, false);
   };
 
@@ -146,14 +151,18 @@ function finishScale(
   };
 }
 
-/** 整段等比例映射，1 真实毫秒 = 1 显示毫秒，无压缩（整日模式，或紧凑模式的退化情形）。 */
-function buildFlatScale(mode: TimelineMode): TimeScale {
+/**
+ * 整段等比例映射，1 真实毫秒 = 1 显示毫秒，无压缩（整日模式，或紧凑模式的退化情形）。
+ * bounds 给出映射覆盖的真实半开区间：整日模式为全天 [0, MS_PER_DAY]，
+ * 聚焦模式为聚焦窗口（窗口内仍按等比例，只覆盖该区间）。
+ */
+function buildFlatScale(mode: TimelineMode, bounds: FocusWindow = { startMs: 0, endMs: MS_PER_DAY }): TimeScale {
   const segment: ScaleSegment = {
     kind: 'gap',
-    realStart: 0,
-    realEnd: MS_PER_DAY,
+    realStart: bounds.startMs,
+    realEnd: bounds.endMs,
     displayStart: 0,
-    displayEnd: MS_PER_DAY,
+    displayEnd: bounds.endMs - bounds.startMs,
     compressed: false,
   };
   return finishScale(mode, [segment], []);
@@ -164,18 +173,36 @@ function buildFlatScale(mode: TimelineMode): TimeScale {
  *
  * @param mode 'day' 整日等比例；'compact' 压缩超过五分钟的相邻空档
  * @param items 已通过整批校验的全部提示（跨所有资源合并）
+ * @param window 可选聚焦窗口：给定后映射只覆盖该半开区间（窗口内的提示并集与空档
+ *               仍按同一规则构建），缺省覆盖全天。窗口只裁切显示区间，
+ *               不改写任何真实时刻；紧凑压缩规则在窗口内照常生效。
  */
-export function createTimeScale(mode: TimelineMode, items: readonly CueItem[]): TimeScale {
-  if (mode === 'day') return buildFlatScale('day');
+export function createTimeScale(
+  mode: TimelineMode,
+  items: readonly CueItem[],
+  window?: FocusWindow,
+): TimeScale {
+  const lo = window?.startMs ?? 0;
+  const hi = window?.endMs ?? MS_PER_DAY;
 
-  const occupied = mergeOccupied(items);
+  if (mode === 'day') return buildFlatScale('day', { startMs: lo, endMs: hi });
 
-  // 没有任何占用时（实际不会渲染时间轴）退化为等比例映射，避免把全天压成三十秒。
-  if (occupied.length === 0) return buildFlatScale('compact');
+  // 聚焦模式下只保留与窗口半开相交的提示（贴边交接不算），
+  // 再让 mergeOccupied 按半开并集自然合并；整日模式 items 原样参与。
+  const visibleItems = window ? items.filter((it) => intersectsRange(it.startMs, it.endMs, lo, hi)) : items;
+  const occupiedAll = mergeOccupied(visibleItems);
+
+  // 把占用并集裁进窗口：与窗口半开相交的段保留，裁掉窗外部分。
+  const occupied = occupiedAll
+    .filter((span) => intersectsRange(span.start, span.end, lo, hi))
+    .map((span) => ({ start: Math.max(span.start, lo), end: Math.min(span.end, hi) }));
+
+  // 窗口内没有任何占用时退化为等比例映射（覆盖窗口本身），避免把整窗压成三十秒。
+  if (occupied.length === 0) return buildFlatScale('compact', { startMs: lo, endMs: hi });
 
   const segments: ScaleSegment[] = [];
   const compressedGaps: CompressedGap[] = [];
-  let realCursor = 0;
+  let realCursor = lo;
   let displayCursor = 0;
 
   const pushGap = (realStart: number, realEnd: number) => {
@@ -217,7 +244,7 @@ export function createTimeScale(mode: TimelineMode, items: readonly CueItem[]): 
     displayCursor += span.end - span.start;
     realCursor = span.end;
   }
-  pushGap(realCursor, MS_PER_DAY);
+  pushGap(realCursor, hi);
 
   return finishScale('compact', segments, compressedGaps);
 }
